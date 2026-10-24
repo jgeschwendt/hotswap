@@ -1,0 +1,6 @@
+# Pinned, not "stable": clippy runs with `-D warnings` against the pedantic set,
+# and a newer clippy carries lints the pinned one doesn't.
+[tools]
+# hk runs the pre-push gate (hk.pkl); `hk install --mise` wires it.
+hk = "2.5.0"
+rust = "1.94.0"

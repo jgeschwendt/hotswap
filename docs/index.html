@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en" class="ui">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>hotswap — design</title>
+<link rel="stylesheet" href="https://gigantic.dev/ui/ui.css" />
+<link rel="stylesheet" href="https://gigantic.dev/ui/docs.css" />
+<link rel="stylesheet" href="page.css" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23476349'/%3E%3Cpath d='M3 5.5h7.5M13 10.5H5.5' stroke='white' stroke-width='1.5'/%3E%3Cpath d='M10 2.5l3.5 3-3.5 3zM6 7.5l-3.5 3 3.5 3z' fill='white'/%3E%3C/svg%3E" />
+</head>
+<body data-page="design">
+<svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true">
+<!-- Phosphor Icons (regular), MIT (c) 2023 Phosphor Icons — via jgeschwendt/ui icons/ -->
+<symbol id="ph-arrows-left-right" viewBox="0 0 256 256" fill="currentColor"><path d="M213.66,181.66l-32,32a8,8,0,0,1-11.32-11.32L188.69,184H48a8,8,0,0,1,0-16H188.69l-18.35-18.34a8,8,0,0,1,11.32-11.32l32,32A8,8,0,0,1,213.66,181.66Zm-139.32-64a8,8,0,0,0,11.32-11.32L67.31,88H208a8,8,0,0,0,0-16H67.31L85.66,53.66A8,8,0,0,0,74.34,42.34l-32,32a8,8,0,0,0,0,11.32Z"/></symbol>
+<symbol id="ph-circle-half" viewBox="0 0 256 256" fill="currentColor"><path d="M128,24A104,104,0,1,0,232,128,104.11,104.11,0,0,0,128,24Zm8,16.37a86.4,86.4,0,0,1,16,3V212.67a86.4,86.4,0,0,1-16,3Zm32,9.26a87.81,87.81,0,0,1,16,10.54V195.83a87.81,87.81,0,0,1-16,10.54ZM40,128a88.11,88.11,0,0,1,80-87.63V215.63A88.11,88.11,0,0,1,40,128Zm160,50.54V77.46a87.82,87.82,0,0,1,0,101.08Z"/></symbol>
+<symbol id="ph-moon" viewBox="0 0 256 256" fill="currentColor"><path d="M233.54,142.23a8,8,0,0,0-8-2,88.08,88.08,0,0,1-109.8-109.8,8,8,0,0,0-10-10,104.84,104.84,0,0,0-52.91,37A104,104,0,0,0,136,224a103.09,103.09,0,0,0,62.52-20.88,104.84,104.84,0,0,0,37-52.91A8,8,0,0,0,233.54,142.23ZM188.9,190.34A88,88,0,0,1,65.66,67.11a89,89,0,0,1,31.4-26A106,106,0,0,0,96,56,104.11,104.11,0,0,0,200,160a106,106,0,0,0,14.92-1.06A89,89,0,0,1,188.9,190.34Z"/></symbol>
+<symbol id="ph-sun" viewBox="0 0 256 256" fill="currentColor"><path d="M120,40V16a8,8,0,0,1,16,0V40a8,8,0,0,1-16,0Zm72,88a64,64,0,1,1-64-64A64.07,64.07,0,0,1,192,128Zm-16,0a48,48,0,1,0-48,48A48.05,48.05,0,0,0,176,128ZM58.34,69.66A8,8,0,0,0,69.66,58.34l-16-16A8,8,0,0,0,42.34,53.66Zm0,116.68-16,16a8,8,0,0,0,11.32,11.32l16-16a8,8,0,0,0-11.32-11.32ZM192,72a8,8,0,0,0,5.66-2.34l16-16a8,8,0,0,0-11.32-11.32l-16,16A8,8,0,0,0,192,72Zm5.66,114.34a8,8,0,0,0-11.32,11.32l16,16a8,8,0,0,0,11.32-11.32ZM48,128a8,8,0,0,0-8-8H16a8,8,0,0,0,0,16H40A8,8,0,0,0,48,128Zm80,80a8,8,0,0,0-8,8v24a8,8,0,0,0,16,0V216A8,8,0,0,0,128,208Zm112-88H216a8,8,0,0,0,0,16h24a8,8,0,0,0,0-16Z"/></symbol>
+</svg>
+
+<header class="appbar">
+  <h1 class="appbar-title">
+    <svg class="icon" aria-hidden="true"><use href="#ph-arrows-left-right" /></svg>
+    hotswap <small>· design</small>
+  </h1>
+  <span class="spacer"></span>
+  <div class="segmented" role="group" aria-label="theme">
+    <button type="button" data-theme-set="light" aria-pressed="false" title="light">
+      <svg class="icon icon-sm" aria-hidden="true"><use href="#ph-sun" /></svg>light
+    </button>
+    <button type="button" data-theme-set="auto" aria-pressed="true" title="follow the system">
+      <svg class="icon icon-sm" aria-hidden="true"><use href="#ph-circle-half" /></svg>auto
+    </button>
+    <button type="button" data-theme-set="dark" aria-pressed="false" title="dark">
+      <svg class="icon icon-sm" aria-hidden="true"><use href="#ph-moon" /></svg>dark
+    </button>
+  </div>
+</header>
+
+<main class="docs-shell" data-container>
+
+<header class="stack">
+  <p class="eyebrow">the swap moment for the gigantic primitives</p>
+  <p class="lead docs-lead">Zero-downtime upgrades—<code class="code">hotswap</code> moves a running
+    tool to its next release and back. mise and packslip release, verify, install and keep versions
+    side by side; hotswap owns only the moment between: drain, swap, smoke, then settle or roll
+    back. One binary, no daemon, no download code.</p>
+  <nav class="row docs-toc" aria-label="sections">
+    <a class="pill" href="#why">why</a>
+    <a class="pill" href="#release">release</a>
+    <a class="pill" href="#install">install</a>
+    <a class="pill" href="#mechanism">mechanism</a>
+    <a class="pill" href="#setup">setup</a>
+    <a class="pill" href="#bifrost">bifrost</a>
+    <a class="pill" href="#non-goals">non-goals</a>
+    <a class="pill" href="#next">next</a>
+  </nav>
+</header>
+
+<!-- ※ why -->
+<section class="docs-section" id="why" data-component="why">
+  <header>
+    <h2 class="h2">Why</h2>
+  </header>
+  <p>The gigantic tools — grove, sandman, stele, routines, voice, bifrost, … — are independent
+    primitives; each is used however suits whoever picks it up. bifrost, the desktop app, plugs them
+    into one UI the way mise plugs in runtimes: an optional install, and once installed the
+    component's UI appears — a routines tab, sandman's report page. A remote Mac mini or studio runs
+    the night shift and is worked on remotely; it needs the same releases the dev box gets.</p>
+  <p>jdx tooling first: one maintainer across the toolchain (mise, hk, mbx) is worth more than a
+    marginal feature. <a class="link" href="https://packslip.dev">packslip</a> — crate 1.11.0, "a
+    vendor-neutral signed release manifest" — and mise's <code class="code">packslip:</code> backend
+    already cover release, discovery, verification, install, upgrade and side-by-side versions. What
+    they leave over is the moment of the swap on a host where the tool is running. That is
+    hotswap.</p>
+  <p class="docs-note">Supersedes the shared-updater plan: grove's
+    <code class="code">crates/grove/src/update/</code> — versions dir, current/previous links,
+    pending-flip marker, canary walk, sha256 sidecar — duplicates mise and packslip and retires once
+    grove adopts them. bifrost's <code class="code">selfupdate.rs</code> and layer updater
+    likewise.</p>
+</section>
+
+<!-- ※ release -->
+<section class="docs-section" id="release" data-component="release">
+  <header>
+    <h2 class="h2">Release</h2>
+    <p class="docs-note">What every tool does — the contract hotswap relies on but does not
+      own.</p>
+  </header>
+  <ul class="stack claims" role="list">
+    <li><strong>a GitHub Release per merge to main</strong> — trunk equals latest release, so the
+      dev box and the remote Mac follow the same line.</li>
+    <li><strong>versions are <code class="code">YYYY.M.N</code></strong> — mise's own calendar
+      form, N counting the month's releases (<code class="code">2026.10.3</code>). packslip requires
+      semver; four-part dates do not parse.</li>
+    <li><strong>the tag job</strong> builds <code class="code">&lt;tool&gt;-&lt;target&gt;.tar.gz</code>
+      per target (<code class="code">aarch64-apple-darwin</code> first), uploads them, then runs
+      <code class="code">jdx/packslip@v1</code> with <code class="code">artifacts:</code> and
+      <code class="code">bin:</code> — it attests the files and signs
+      <code class="code">packslip.sigstore.json</code> with the workflow identity.</li>
+    <li><strong>public and private alike</strong> — public repos release from their own CI;
+      private ones (bifrost, voice) the same way, since mise's packslip backend fetches private
+      assets through the gh token. The public <code class="code">*-releases</code> mirror bifrost
+      uses today retires.</li>
+    <li><strong>a signed release list</strong> — a repo may publish
+      <code class="code">.well-known/packslip.json</code> to recommend or withdraw a version.</li>
+  </ul>
+  <pre class="snippet">permissions:
+  attestations: write   <span class="snippet-note"># packslip attests each archive</span>
+  contents: write       <span class="snippet-note"># upload release assets</span>
+  id-token: write       <span class="snippet-note"># keyless sigstore, the workflow identity</span></pre>
+  <p class="docs-note plan-note-after">The safer two-job form builds and uploads in one job and
+    keeps the packslip job at <code class="code">contents: read</code>. Each tool's first release
+    is the owner's call under his release policy.</p>
+</section>
+
+<!-- ※ install -->
+<section class="docs-section" id="install" data-component="install">
+  <header>
+    <h2 class="h2">Install and upgrade</h2>
+    <p class="docs-note">mise does all of it; hotswap adds nothing here.</p>
+  </header>
+  <div class="table-wrap">
+    <table data-table>
+      <thead><tr><th>command</th><th>what it does</th></tr></thead>
+      <tbody>
+        <tr><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt;</td><td>install with publisher verification, signer continuity (<code class="code">packslip/pins.toml</code> in mise's state dir) and artifact digest checks</td></tr>
+        <tr><td class="table-mono">mise upgrade</td><td>move to the newest eligible version</td></tr>
+        <tr><td class="table-mono">mise use -g &lt;tool&gt;@&lt;previous&gt;</td><td>instant rollback — versions sit side by side</td></tr>
+        <tr><td class="table-mono">mise ls --json</td><td>the inventory</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="stack claims" role="list">
+    <li><strong>no release-age hold</strong> — our tools set the tool option
+      <code class="code">minimum_release_age = "0s"</code>; mise's default holds
+      <code class="code">latest</code> 24 h.</li>
+    <li><strong>the <code class="code">hotswap</code> routine</strong> — a doc in
+      <code class="code">~/.routines</code>, every fifteen minutes on each host:
+      <code class="code">mise upgrade</code> for the gigantic tools, then
+      <code class="code">hotswap &lt;tool&gt;</code> for each that changed.</li>
+    <li><strong>the rest of the toolchain</strong> — the daily <code class="code">all-up</code>
+      routine keeps bumping it, unchanged.</li>
+  </ul>
+</section>
+
+<!-- ※ mechanism -->
+<section class="docs-section" id="mechanism" data-component="mechanism">
+  <header>
+    <h2 class="h2">Mechanism</h2>
+    <p class="docs-note">One binary, installed like any other tool. It acts when a tool's
+      <code class="code">mise ls</code> current version differs from the one its running processes
+      were started from.</p>
+  </header>
+  <pre class="snippet">hotswap &lt;tool&gt;           <span class="snippet-note"># drain, swap, smoke, settle or roll back</span>
+hotswap &lt;tool&gt; --check   <span class="snippet-note"># report what would happen; touch nothing</span>
+hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollback to the previous version</span></pre>
+  <ol class="steps">
+    <li><strong>Drain</strong> — ask the tool to finish or hand over what it holds, by the tool's
+      own contract: grove's server drain ladder; a sandman shift keeps the binary it started on
+      (install replaces by unlink and create, so a running process is untouched and only new
+      processes see the new version); launchd agents are the swap point.</li>
+    <li><strong>Swap</strong> — <code class="code">launchctl kickstart -k</code> each agent the
+      tool declares (<code class="code">dev.gigantic.&lt;project&gt;[.&lt;job&gt;]</code>), then run
+      <code class="code">&lt;tool&gt; setup</code>.</li>
+    <li><strong>Smoke</strong> — run the tool's declared smoke commands against the new
+      processes.</li>
+    <li><strong>Settle or roll back</strong> — green: record the swap in
+      <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code>. Red:
+      <code class="code">mise use -g &lt;tool&gt;@&lt;previous&gt;</code>, kickstart again, smoke
+      again, exit 1 naming the failing probe, and leave the record saying why.</li>
+  </ol>
+  <div class="table-wrap">
+    <table data-table>
+      <thead><tr><th>tool</th><th>smoke</th></tr></thead>
+      <tbody>
+        <tr><td class="table-mono">grove</td><td><code class="code">grove doctor --dry-run</code></td></tr>
+        <tr><td class="table-mono">routines</td><td><code class="code">routine status</code></td></tr>
+        <tr><td class="table-mono">sandman</td><td><code class="code">sandman version</code> · <code class="code">sandman recall --cwd</code> · <code class="code">sandman shift status</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+  <ul class="stack claims" role="list">
+    <li><strong>the record</strong> — version, time and smoke output per swap; a rollback's record
+      names the probe that failed.</li>
+    <li><strong>never a version directory</strong> — hotswap never downloads, verifies or writes
+      one; mise did.</li>
+    <li><strong>no daemon</strong> — a routine, launchd or bifrost decides when to call it.</li>
+  </ul>
+</section>
+
+<!-- ※ setup -->
+<section class="docs-section" id="setup" data-component="setup">
+  <header>
+    <h2 class="h2"><code class="code">&lt;tool&gt; setup</code></h2>
+    <p class="docs-note">What every tool owns: one idempotent verb for its install duties. hotswap
+      calls it after a swap; a fresh host calls it once after <code class="code">mise install</code>.
+      The duties live with the tool, never in hotswap.</p>
+  </header>
+  <ul class="stack claims" role="list">
+    <li><strong>launchd</strong> — render its templates (carrying <code class="code">{{HOME}}</code>,
+      as sandman's <code class="code">report plist</code> already does) and bootstrap the
+      agents.</li>
+    <li><strong>routines</strong> — install its routine docs into <code class="code">~/.routines</code>,
+      leaving an edited copy alone.</li>
+    <li><strong>MCP</strong> — register its servers.</li>
+    <li><strong>report</strong> — print what it did.</li>
+  </ul>
+  <h3 class="h3" id="setup-manifest"><code class="code">hotswap.toml</code></h3>
+  <p class="docs-note">Shipped beside the binary in the release archive. Field names illustrative;
+    the four duties — agents, smoke, setup, drain — are the contract.</p>
+  <pre class="snippet">agents = ["dev.gigantic.sandman.report"]          <span class="snippet-note"># kickstarted on swap</span>
+# drain = [...]                                   <span class="snippet-note"># optional; a shift keeps the binary it started on</span>
+setup  = ["sandman", "setup"]                     <span class="snippet-note"># run after every swap</span>
+smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]</pre>
+</section>
+
+<!-- ※ bifrost -->
+<section class="docs-section" id="bifrost" data-component="bifrost">
+  <header>
+    <h2 class="h2">bifrost on mise</h2>
+    <p class="docs-note">The Components tab is a front end for mise and hotswap; bifrost itself is
+      a component too.</p>
+  </header>
+  <div class="table-wrap">
+    <table data-table>
+      <thead><tr><th>action</th><th>runs</th></tr></thead>
+      <tbody>
+        <tr><td>components</td><td>the gigantic tools</td></tr>
+        <tr><td>install</td><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt; · &lt;tool&gt; setup</td></tr>
+        <tr><td>upgrade</td><td class="table-mono">mise upgrade &lt;tool&gt; · hotswap &lt;tool&gt;</td></tr>
+        <tr><td>roll back</td><td class="table-mono">hotswap &lt;tool&gt; --back</td></tr>
+        <tr><td>tab shown</td><td>presence in <code class="code">mise ls --json</code> — routines tab, sandman report page, voice panel</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="docs-note plan-note-after">bifrost's app and runtime layers move onto the same path;
+    <code class="code">selfupdate.rs</code> retires.</p>
+</section>
+
+<!-- ※ non-goals -->
+<section class="docs-section" id="non-goals" data-component="non-goals">
+  <header>
+    <h2 class="h2">Non-goals</h2>
+  </header>
+  <ul class="stack" role="list">
+    <li data-non-goal="daemon">A daemon — callers decide when to swap.</li>
+    <li data-non-goal="download">Download or signature code of its own — mise and packslip.</li>
+    <li data-non-goal="package-manager">A package manager — that is mise.</li>
+    <li data-non-goal="release-format">A release format — that is packslip.</li>
+    <li data-non-goal="signing">Signing beyond packslip's keyless sigstore, until the owner says otherwise.</li>
+    <li data-non-goal="third-party">Third-party tools — the gigantic primitives only.</li>
+    <li data-non-goal="versions">A version directory of its own — mise keeps versions side by side.</li>
+  </ul>
+</section>
+
+<!-- ※ next -->
+<section class="docs-section" id="next" data-component="next">
+  <header>
+    <h2 class="h2">Next</h2>
+    <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
+  </header>
+  <ol class="steps">
+    <li><strong>sandman first</strong> — a tag-on-merge release workflow computing
+      <code class="code">YYYY.M.N</code>, <code class="code">jdx/packslip@v1</code>, and a
+      <code class="code">sandman setup</code> verb folding <code class="code">report plist</code> and
+      the shift-test and routine installs. The interim trunk-build routine
+      <code class="code">sandman-install</code> retires when
+      <code class="code">mise use -g packslip:jgeschwendt/sandman</code> is live on this Mac.</li>
+    <li><strong>hotswap's own crate</strong> — <code class="code">hotswap &lt;tool&gt;</code>,
+      <code class="code">--check</code>, <code class="code">--back</code>,
+      <code class="code">hotswap.toml</code>, the state record, the routine doc; 100 % coverage, code
+      golf, hk pre-push gate, stele adopted.</li>
+    <li><strong>routines and stele</strong> adopt the release workflow and
+      <code class="code">setup</code>.</li>
+    <li><strong>grove adopts</strong> — its <code class="code">update</code> module and
+      <code class="code">install.sh</code> retire.</li>
+    <li><strong>bifrost</strong> — Components tab on mise and hotswap; app and runtime layers and
+      <code class="code">selfupdate.rs</code> retire; the <code class="code">*-releases</code> mirror
+      retires.</li>
+  </ol>
+  <p class="docs-note plan-note-after"><strong>Owner-only:</strong> creating the repo, the first
+    release of each tool, and the gigantic.dev proxy entry for
+    <code class="code">/hotswap/</code>.</p>
+</section>
+
+</main>
+
+<script>
+/* The theme contract, verbatim from jgeschwendt/ui docs.js — same localStorage
+   key, so a theme chosen on the ui pages is the theme this one opens in. */
+const THEME_KEY = "ui-theme";
+function applyTheme(mode) {
+  const root = document.documentElement;
+  if (mode === "auto") {
+    root.removeAttribute("data-theme");
+    localStorage.removeItem(THEME_KEY);
+  } else {
+    root.dataset.theme = mode;
+    localStorage.setItem(THEME_KEY, mode);
+  }
+  for (const b of document.querySelectorAll("[data-theme-set]")) {
+    b.setAttribute("aria-pressed", String(b.dataset.themeSet === mode));
+  }
+}
+for (const b of document.querySelectorAll("[data-theme-set]")) {
+  b.addEventListener("click", () => applyTheme(b.dataset.themeSet));
+}
+applyTheme(localStorage.getItem(THEME_KEY) || "auto");
+</script>
+</body>
+</html>

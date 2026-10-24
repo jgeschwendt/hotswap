@@ -1,0 +1,7 @@
+/* page.css — what is stele's alone. Tokens and components are ui.css's, the
+   shell (container, measure, sections, snippets, claims, steps) is docs.css's;
+   both are linked from https://gigantic.dev/ui/, never copied here. */
+
+.plan-note-after {
+  margin-top: 1.25rem;
+}
