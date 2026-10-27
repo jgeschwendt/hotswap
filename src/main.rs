@@ -6,7 +6,7 @@ use std::{
     fmt::Display,
     fs::{self, File},
     io::{self, Read, pipe},
-    os::unix::process::CommandExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::PathBuf,
     process::{Command, exit},
     thread,
@@ -50,6 +50,11 @@ struct Record {
     version: String,
 }
 
+/// The mise key prefix of the gigantic tools, the ones a tick upgrades and swaps.
+const GIGANTIC: &str = "packslip:jgeschwendt/";
+/// hotswap's own launchd agent.
+const LABEL: &str = "dev.gigantic.hotswap";
+
 fn die(msg: impl Display) -> ! {
     eprintln!("{msg}");
     exit(2)
@@ -59,25 +64,134 @@ fn main() {
     // A mise.toml in the caller's cwd would shadow the global pins; every child inherits `/`.
     env::set_current_dir("/").ok();
     let args: Vec<String> = env::args().skip(1).collect();
-    let (tool, mode) = match &args[..] {
-        [t] if !t.starts_with('-') => (t, ""),
-        [t, m] if !t.starts_with('-') && (m == "--back" || m == "--check") => (t, m.as_str()),
-        _ => die("usage: hotswap <tool> [--check | --back]"),
-    };
-    let ls = Command::new("mise")
-        // Not `--global`: it lists only the active version, so the rollback target would be invisible.
-        .args(["ls", "--json"])
+    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+    let uid = Command::new("id")
+        .arg("-u")
         .output()
-        .unwrap_or_else(|e| die(format!("mise: {e}")));
-    if !ls.status.success() {
-        die(format!(
-            "mise: {}",
-            String::from_utf8_lossy(&ls.stderr).trim()
-        ));
-    }
-    let tools: BTreeMap<String, Vec<Install>> =
-        serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die(format!("mise: {e}")));
-    let Some((key, installs)) = tools
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
+    let uid = uid.unwrap_or_default();
+    let ls = || -> BTreeMap<String, Vec<Install>> {
+        let ls = Command::new("mise")
+            // Not `--global`: it lists only the active version, so the rollback target would be invisible.
+            .args(["ls", "--json"])
+            .output()
+            .unwrap_or_else(|e| die(format!("mise: {e}")));
+        if !ls.status.success() {
+            die(format!(
+                "mise: {}",
+                String::from_utf8_lossy(&ls.stderr).trim()
+            ));
+        }
+        serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die(format!("mise: {e}")))
+    };
+    let launchctl = |a: &[&str]| {
+        Command::new("launchctl")
+            .args(a)
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
+    let agent = format!("gui/{uid}/{LABEL}");
+    let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
+    let a: Vec<&str> = args.iter().map(String::as_str).collect();
+    let (tool, mode) = match a[..] {
+        ["setup"] => {
+            let dir = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+                .find(|d| {
+                    fs::metadata(d.join("mise"))
+                        .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+                })
+                .unwrap_or_else(|| die("hotswap setup: no mise on PATH"));
+            let (d, h) = (dir.display(), home.display());
+            // mise x from `/` runs whichever hotswap is globally active, so the agent outlives its own
+            // swap; no RunAtLoad, since a load-time tick would race the swap that ran setup for the lock
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>{LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{d}/mise</string>
+    <string>x</string>
+    <string>--</string>
+    <string>hotswap</string>
+    <string>tick</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>{h}</string>
+    <key>PATH</key><string>{d}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{h}/Library/Logs/{LABEL}.log</string>
+  <key>StandardErrorPath</key><string>{h}/Library/Logs/{LABEL}.log</string>
+</dict>
+</plist>
+"#
+            );
+            // hotswap's own swap runs setup from inside the tick, which a bootout would kill
+            if fs::read(&plist).is_ok_and(|b| b == xml.as_bytes()) && launchctl(&["print", &agent])
+            {
+                println!("hotswap setup: {LABEL} unchanged");
+                return;
+            }
+            fs::create_dir_all(home.join("Library/LaunchAgents"))
+                .and_then(|()| fs::write(&plist, xml))
+                .unwrap_or_else(|e| die(format!("hotswap setup: {}: {e}", plist.display())));
+            launchctl(&["bootout", &agent]);
+            let p = plist.display();
+            if !launchctl(&["bootstrap", &format!("gui/{uid}"), &p.to_string()]) {
+                println!("hotswap setup: launchctl bootstrap gui/{uid} {p} failed");
+                exit(1)
+            }
+            println!("hotswap setup: {p} written; {LABEL} loaded, every 900s");
+            return;
+        }
+        ["setup", "--remove"] => {
+            launchctl(&["bootout", &agent]);
+            fs::remove_file(&plist).ok();
+            let p = plist.display();
+            println!("hotswap setup --remove: {LABEL} booted out; {p} removed");
+            return;
+        }
+        ["tick"] => {
+            let keys: Vec<String> = ls()
+                .into_iter()
+                .filter(|(k, v)| k.starts_with(GIGANTIC) && v.iter().any(|i| i.active))
+                .map(|(k, _)| k)
+                .collect();
+            if keys.is_empty() {
+                println!("hotswap tick: no gigantic tools");
+                return;
+            }
+            // no deadline: mise may be downloading; red or not, versions may already differ
+            if !Command::new("mise")
+                .arg("upgrade")
+                .args(&keys)
+                .status()
+                .is_ok_and(|s| s.success())
+            {
+                println!("hotswap tick: mise upgrade failed");
+            }
+            let exe = env::current_exe().unwrap_or_default();
+            let red = keys.iter().filter(|k| {
+                !Command::new(&exe)
+                    .arg(&k[GIGANTIC.len()..])
+                    .status()
+                    .is_ok_and(|s| s.success())
+            });
+            exit(i32::from(red.count() > 0))
+        }
+        [t] if !t.starts_with('-') => (t, ""),
+        [t, m @ ("--back" | "--check")] if !t.starts_with('-') => (t, m),
+        _ => die(
+            "usage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick",
+        ),
+    };
+    let Some((key, installs)) = ls()
         .into_iter()
         .find(|(k, v)| k.rsplit([':', '/']).next() == Some(tool) && v.iter().any(|i| i.active))
     else {
@@ -94,7 +208,7 @@ fn main() {
     };
     let m = manifest(&cur.version)
         .unwrap_or_else(|| die(format!("{tool} {}: not installed", cur.version)));
-    let dir = PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".local/state/hotswap");
+    let dir = home.join(".local/state/hotswap");
     let path = dir.join(format!("{tool}.json"));
     // Held until exit; the kernel drops it if hotswap dies.
     let lock = dir.join(format!("{tool}.lock"));
@@ -122,14 +236,10 @@ fn main() {
         println!("{tool} {}: {state}", r.version);
         exit(i32::from(!r.ok && mode.is_empty()))
     }
-    let uid = Command::new("id")
-        .arg("-u")
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
-    let uid = uid.unwrap_or_default();
     // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke probes.
+    // never hotswap's own agent: the next tick finds a new hotswap through mise x, and a kick kills it
     let steps = |m: &Manifest| -> Vec<Vec<String>> {
-        let kick = m.agents.iter().map(|a| {
+        let kick = m.agents.iter().filter(|a| *a != LABEL).map(|a| {
             ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
                 .map(String::from)
                 .into()

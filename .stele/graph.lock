@@ -3,7 +3,7 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 231,
+      "line": 236,
       "node": "docs"
     },
     "install": {
@@ -13,17 +13,17 @@
     },
     "mechanism": {
       "file": "docs/index.html",
-      "line": 148,
+      "line": 151,
       "node": "docs"
     },
     "next": {
       "file": "docs/index.html",
-      "line": 270,
+      "line": 275,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 254,
+      "line": 259,
       "node": "docs"
     },
     "release": {
@@ -33,7 +33,7 @@
     },
     "setup": {
       "file": "docs/index.html",
-      "line": 198,
+      "line": 203,
       "node": "docs"
     },
     "why": {
@@ -67,7 +67,7 @@
       },
       "id": "/",
       "kind": "system",
-      "purpose": "hotswap — the swap moment for a mise-installed gigantic tool (drain, kickstart its launchd agents, setup, smoke, then settle or roll back through `mise use -g`); one binary, no daemon."
+      "purpose": "hotswap — the swap moment for a mise-installed gigantic tool (drain, setup, kickstart, smoke, settle or roll back via `mise use -g`), plus its own agent's `setup`/`tick`; one binary, no daemon."
     },
     "docs": {
       "budget": null,
@@ -101,7 +101,7 @@
       },
       "id": "src",
       "kind": "container",
-      "purpose": "crate source — `main.rs` is the whole binary — arg parse, `mise ls` lookup, hotswap.toml, the drain → kickstart → setup → smoke run, rollback, the state record"
+      "purpose": "crate source — `main.rs` is the whole binary — arg parse, `mise ls` lookup, hotswap.toml, the drain → setup → kickstart → smoke run, rollback, the state record, `setup` for its own agent, `tick`"
     },
     "tests": {
       "budget": null,
