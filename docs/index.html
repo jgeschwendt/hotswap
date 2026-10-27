@@ -294,9 +294,9 @@ timeout = 120   <span class="snippet-note"># seconds per step; expiry kills the 
       the shift-test and routine installs. The interim trunk-build routine
       <code class="code">sandman-install</code> retires when
       <code class="code">mise use -g packslip:jgeschwendt/sandman</code> is live on this Mac.</li>
-    <li><strong>hotswap</strong> — the swap, <code class="code">setup</code>,
-      <code class="code">--remove</code> and the tick landed; its first release and install are
-      the owner's.</li>
+    <li><strong>hotswap</strong> — a record before a rollback's
+      <code class="code">mise use</code> (a crash there reads green); never roll back onto a red
+      record. First release is the owner's.</li>
     <li><strong>routines and stele</strong> adopt the release workflow and
       <code class="code">setup</code>.</li>
     <li><strong>grove adopts</strong> — its <code class="code">update</code> module and
