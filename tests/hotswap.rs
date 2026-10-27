@@ -33,16 +33,20 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::create_dir_all(p.join(name).parent().unwrap()).unwrap();
         fs::write(p.join(name), body).unwrap();
     }
+    let shims = p.join(".local/share/mise/shims");
     fs::create_dir_all(&bin).unwrap();
-    for name in ["chk", "launchctl", "mise", "t"] {
+    fs::create_dir_all(&shims).unwrap();
+    // `t/hotswap` leads PATH, as an old install's bin dir does under a shim; a tick that runs it fails
+    // the exact log match
+    for name in ["bin/chk", "bin/launchctl", "bin/mise", "bin/t", "t/hotswap"] {
         let stub = format!(
             "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && exec cat '{0}/ls.json'\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
             p.display()
         );
-        fs::write(bin.join(name), stub).unwrap();
-        fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
+        fs::write(p.join(name), stub).unwrap();
+        fs::set_permissions(p.join(name), fs::Permissions::from_mode(0o755)).unwrap();
     }
-    symlink(env!("CARGO_BIN_EXE_hotswap"), bin.join("hotswap")).unwrap();
+    symlink(env!("CARGO_BIN_EXE_hotswap"), shims.join("hotswap")).unwrap();
     // `t` 1 lives apart with its own manifest; `v` is the active one of 2 and 3
     let ls = |v: &str| {
         let e = |dir: &str, active: bool, installed: bool, version: &str| json!({"active": active, "install_path": p.join(dir), "installed": installed, "version": version});
@@ -367,12 +371,16 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::remove_dir(state_dir.join("bare.lock")).ok();
     }
 
-    // a red swap reds the tick too; no gigantic tools, no-op
+    // a red swap reds the tick too; a shims dir PATH can't hold refuses; no gigantic tools, no-op
     assert_eq!(
         run(&["tick"]),
         format!(
             "1\nupgrade out\nt 3: red at chk x\nt1 1: up to date\nupgrade err\n{upgrade}{ls_log}"
         )
+    );
+    assert_eq!(
+        go(&["tick"], &[("MISE_DATA_DIR", "a:b")]),
+        "2\nhotswap tick: path segment contains separator `:`\n"
     );
     ls("1");
     assert_eq!(

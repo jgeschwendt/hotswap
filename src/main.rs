@@ -6,6 +6,7 @@ use std::{
     fmt::Display,
     fs::{self, File},
     io::{self, Read, pipe},
+    iter,
     os::unix::{fs::PermissionsExt, process::CommandExt},
     path::PathBuf,
     process::{Command, exit},
@@ -94,6 +95,11 @@ fn main() {
     };
     let agent = format!("gui/{uid}/{LABEL}");
     let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
+    let shims = env::var_os("MISE_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
+        .unwrap_or_else(|| home.join(".local/share/mise"))
+        .join("shims");
     let a: Vec<&str> = args.iter().map(String::as_str).collect();
     let (tool, mode) = match a[..] {
         ["setup"] => {
@@ -103,18 +109,12 @@ fn main() {
                         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 })
                 .unwrap_or_else(|| die("hotswap setup: no mise on PATH"));
-            let shims = env::var_os("MISE_DATA_DIR")
-                .map(PathBuf::from)
-                .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
-                .unwrap_or_else(|| home.join(".local/share/mise"))
-                .join("shims");
             let esc = |p: &PathBuf| {
                 let p = p.display().to_string().replace('&', "&amp;");
                 p.replace('<', "&lt;").replace('>', "&gt;")
             };
             // a shim re-resolves the globally active hotswap on every exec (launchd's cwd is `/`), so
-            // the agent outlives its own swap; shims lead PATH so each step after the upgrade runs the
-            // new version; no RunAtLoad, since a load-time tick would race the swap that ran setup
+            // the agent outlives its own swap; no RunAtLoad, since a load-time tick would race the swap that ran setup
             let xml = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -171,6 +171,12 @@ fn main() {
             return;
         }
         ["tick"] => {
+            // the shim that ran this tick put the old installs' bin dirs ahead of the shims; shims
+            // lead again, so each child `hotswap` is the shim, which re-resolves to the upgraded
+            // versions for the swap and its steps
+            let path = env::var_os("PATH").unwrap_or_default();
+            let path = env::join_paths(iter::once(shims).chain(env::split_paths(&path)))
+                .unwrap_or_else(|e| die(format!("hotswap tick: {e}")));
             let keys: Vec<String> = ls()
                 .into_iter()
                 // those name a verb, not a tool: a `tick` child would tick again, without bound
@@ -194,11 +200,12 @@ fn main() {
             if !up {
                 println!("hotswap tick: mise upgrade failed");
             }
-            // through PATH's shims, the upgraded version; its own group, since a `hotswap setup`
-            // bootout of this job kills the job's group and would take the in-flight swap with it
+            // its own group, since a `hotswap setup` bootout of this job kills the job's group and
+            // would take the in-flight swap with it
             let red = keys.iter().filter(|k| {
                 !Command::new("hotswap")
                     .arg(&k[GIGANTIC.len()..])
+                    .env("PATH", &path)
                     .process_group(0)
                     .status()
                     .is_ok_and(|s| s.success())

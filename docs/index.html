@@ -147,8 +147,10 @@
       process group, exiting 1 on a failed upgrade or any red swap. The plist runs mise's shim
       <code class="code">&lt;mise data dir&gt;/shims/hotswap tick</code> with the shims first on
       <code class="code">PATH</code>; a shim re-resolves the global version on every exec, so the
-      agent follows whichever hotswap is active, survives hotswap swapping itself, and every step
-      after the upgrade runs the new binaries; no swap ever kickstarts it. Tools are
+      agent follows whichever hotswap is active and survives hotswap swapping itself; no swap ever
+      kickstarts it. A shim puts the active installs' own bin dirs ahead of the shims, so the tick
+      hands each swap a <code class="code">PATH</code> led by the shims again, and the shim, run
+      after the upgrade, re-resolves to the new versions for that swap and every step. Tools are
       independent at runtime: nothing here requires routines, grove or sandman to run.</li>
     <li><strong>the rest of the toolchain</strong> — whatever already bumps it on the host
       (a daily <code class="code">mise upgrade</code>) keeps doing so, unchanged.</li>
