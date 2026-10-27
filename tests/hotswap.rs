@@ -22,7 +22,7 @@ fn hotswap() {
         ),
         (
             "t/hotswap.toml",
-            r#"agents = ["dev.gigantic.t"]
+            r#"agents = ["dev.gigantic.hotswap", "dev.gigantic.t"]
 drain = [["t", "drain"]]
 setup = ["t", "setup"]
 smoke = [["t", "version"], ["chk", "x"]]"#,
@@ -67,7 +67,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::remove_file(p.join("log")).ok();
         let out = String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into_owned();
         format!("{}\n{out}{log}", o.status.code().unwrap())
-            .replace(&format!("/{}/", uid.trim()), "/$UID/")
+            .replace(&format!("gui/{}", uid.trim()), "gui/$UID")
     };
     let state_dir = p.join(".local/state/hotswap");
     let rec = |tool: &str| {
@@ -94,7 +94,8 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
     };
     let code = |name: &str| fs::write(p.join(name), "3").unwrap();
-    let usage = "2\nusage: hotswap <tool> [--check | --back]\n";
+    let usage =
+        "2\nusage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick\n";
     let ls_log = "mise ls --json\n";
     let swap_log =
         "t drain\nt setup\nlaunchctl kickstart -k gui/$UID/dev.gigantic.t\nt version\nchk x\n";
@@ -106,6 +107,37 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert_eq!(run(&[]), usage);
     assert_eq!(run(&["--back"]), usage);
     assert_eq!(run(&["t", "--x"]), usage);
+
+    // setup: fresh, unchanged, then a failing launchctl reloads and reports; --remove ignores it; an
+    // unwritable plist exits 2
+    let agent = p.join("Library/LaunchAgents/dev.gigantic.hotswap.plist");
+    let a = agent.display();
+    let bootout = "launchctl bootout gui/$UID/dev.gigantic.hotswap\n";
+    let reload = format!("{bootout}launchctl bootstrap gui/$UID {a}\n");
+    let print = "launchctl print gui/$UID/dev.gigantic.hotswap\n";
+    let fresh = format!("hotswap setup: {a} written; dev.gigantic.hotswap loaded, every 900s");
+    assert_eq!(run(&["setup"]), format!("0\n{fresh}\n{reload}"));
+    let b = bin.display();
+    let xml = fs::read_to_string(&agent).unwrap();
+    assert!(xml.contains(&format!("<array>\n    <string>{b}/mise</string>\n    <string>x</string>\n    <string>--</string>\n    <string>hotswap</string>\n    <string>tick</string>\n  </array>")));
+    assert!(xml.contains(&format!(
+        "<key>PATH</key><string>{b}:/usr/bin:/bin:/usr/sbin:/sbin</string>"
+    )));
+    let same = "hotswap setup: dev.gigantic.hotswap unchanged";
+    assert_eq!(run(&["setup"]), format!("0\n{same}\n{print}"));
+    code("launchctl.code");
+    let failed = format!("hotswap setup: launchctl bootstrap gui/$UID {a} failed");
+    assert_eq!(run(&["setup"]), format!("1\n{failed}\n{print}{reload}"));
+    let removed = format!("hotswap setup --remove: dev.gigantic.hotswap booted out; {a} removed");
+    assert_eq!(
+        run(&["setup", "--remove"]),
+        format!("0\n{removed}\n{bootout}")
+    );
+    assert!(!agent.exists());
+    fs::create_dir(&agent).unwrap();
+    assert!(run(&["setup"]).starts_with(&format!("2\nhotswap setup: {a}: Is a directory")));
+    fs::remove_dir(&agent).unwrap();
+    fs::remove_file(p.join("launchctl.code")).unwrap();
 
     // mise missing, failing, then talking nonsense
     assert_eq!(
@@ -125,6 +157,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         run(&["t"]),
         "2\nmise: No such file or directory (os error 2)\n"
     );
+    assert_eq!(run(&["setup"]), "2\nhotswap setup: no mise on PATH\n");
     fs::rename(p.join("mise"), bin.join("mise")).unwrap();
     ls("2");
 
@@ -177,6 +210,11 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     let smoke = json!([{"code": 0, "output": "version out\nversion err\n", "probe": "t version"}, {"code": 0, "output": "x out\nx err\n", "probe": "chk x"}]);
     assert_eq!(rec("t")["smoke"], smoke);
     assert_eq!(run(&["t"]), format!("0\nt 3: up to date\n{ls_log}"));
+    let upgrade = format!("{ls_log}mise upgrade packslip:jgeschwendt/t\n{ls_log}");
+    assert_eq!(
+        run(&["tick"]),
+        format!("0\nupgrade out\nt 3: up to date\nupgrade err\n{upgrade}")
+    );
     assert_eq!(
         run(&["t", "--check"]),
         format!("0\nt 3: up to date\n{ls_log}")
@@ -277,4 +315,18 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         assert!(run(&["bare"]).starts_with(&bare));
         fs::remove_dir(state_dir.join("bare.lock")).ok();
     }
+
+    // tick: a failed upgrade still swaps, and a red swap reds the tick; no gigantic tools, no-op
+    code("mise.code");
+    assert_eq!(
+        run(&["tick"]),
+        format!(
+            "1\nupgrade out\nhotswap tick: mise upgrade failed\nt 3: red at chk x\nupgrade err\n{upgrade}"
+        )
+    );
+    ls("1");
+    assert_eq!(
+        run(&["tick"]),
+        format!("0\nhotswap tick: no gigantic tools\n{ls_log}")
+    );
 }
