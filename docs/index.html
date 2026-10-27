@@ -222,7 +222,8 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
   <pre class="snippet">agents = ["dev.gigantic.sandman.report"]          <span class="snippet-note"># kickstarted on swap</span>
 # drain = [...]                                   <span class="snippet-note"># optional; a shift keeps the binary it started on</span>
 setup  = ["sandman", "setup"]                     <span class="snippet-note"># run after every swap</span>
-smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]</pre>
+smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]
+timeout = 120   <span class="snippet-note"># seconds per step</span></pre>
 </section>
 
 <!-- ※ bifrost -->
@@ -289,9 +290,8 @@ smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]</pre>
       <code class="code">selfupdate.rs</code> retire; the <code class="code">*-releases</code> mirror
       retires.</li>
   </ol>
-  <p class="docs-note plan-note-after"><strong>Before the agent ticks unattended:</strong> a deadline
-    on every step (a hung probe holds the launchd job forever), one lock per tool (the tick and a
-    bifrost click race on the record), never kickstarting the agent hotswap runs inside, a PATH in
+  <p class="docs-note plan-note-after"><strong>Before the agent ticks unattended:</strong> never
+    kickstarting the agent hotswap runs inside, a PATH in
     the plist that reaches mise, and a call on the exact pin a rollback's
     <code class="code">mise use -g</code> leaves, which keeps <code class="code">mise upgrade</code>
     off the next fixed release.</p>

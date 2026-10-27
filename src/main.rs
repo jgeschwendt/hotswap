@@ -4,10 +4,12 @@ use std::{
     collections::BTreeMap,
     env,
     fmt::Display,
-    fs,
+    fs::{self, File},
+    io::{self, Read, pipe},
     path::PathBuf,
     process::{Command, exit},
-    time::SystemTime,
+    thread,
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Deserialize)]
@@ -25,6 +27,7 @@ struct Manifest {
     drain: Vec<Vec<String>>,
     setup: Vec<String>,
     smoke: Vec<Vec<String>>,
+    timeout: Option<u64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -92,6 +95,16 @@ fn main() {
         .unwrap_or_else(|| die(format!("{tool} {}: not installed", cur.version)));
     let dir = PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".local/state/hotswap");
     let path = dir.join(format!("{tool}.json"));
+    // Held until exit; the kernel drops it if hotswap dies.
+    let lock = dir.join(format!("{tool}.lock"));
+    let _lock = (mode != "--check").then(|| {
+        let f = fs::create_dir_all(&dir)
+            .and_then(|()| File::create(&lock))
+            .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", lock.display())));
+        f.try_lock()
+            .unwrap_or_else(|_| die(format!("{tool}: another hotswap is running")));
+        f
+    });
     let old: Option<Record> = fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
@@ -138,26 +151,42 @@ fn main() {
         }
         return;
     }
-    let run = |argv: &[String]| {
-        Command::new(argv.first().unwrap_or(&String::new()))
-            .args(argv.iter().skip(1))
-            .output()
-            .map_or_else(
-                |e| (-1, e.to_string()),
-                |o| {
-                    (
-                        o.status.code().unwrap_or(-1),
-                        String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into(),
-                    )
-                },
-            )
+    // One pipe for stdout and stderr, drained on a thread while the deadline is polled.
+    let run = |m: &Manifest, argv: &[String]| {
+        let secs = m.timeout.unwrap_or(120);
+        let end = Instant::now() + Duration::from_secs(secs);
+        (|| {
+            let (mut rx, tx) = pipe()?;
+            let mut child = Command::new(argv.first().unwrap_or(&String::new()))
+                .args(argv.iter().skip(1))
+                .stdout(tx.try_clone()?)
+                .stderr(tx)
+                .spawn()?;
+            let out = thread::spawn(move || {
+                let mut buf = vec![];
+                rx.read_to_end(&mut buf).map(|_| buf)
+            });
+            while child.try_wait()?.is_none() {
+                if Instant::now() > end {
+                    child.kill()?;
+                    return Ok((-1, format!("timed out after {secs}s")));
+                }
+                thread::sleep(Duration::from_millis(20));
+            }
+            let buf = out.join().unwrap_or(Ok(vec![]))?;
+            Ok((
+                child.wait()?.code().unwrap_or(-1),
+                String::from_utf8_lossy(&buf).into(),
+            ))
+        })()
+        .unwrap_or_else(|e: io::Error| (-1, e.to_string()))
     };
     // Runs a manifest's steps; stops at the first failure.
     let swap = |m: &Manifest| {
         let steps = steps(m);
         let mut smoke = vec![];
         for (i, argv) in steps.iter().enumerate() {
-            let (code, output) = run(argv);
+            let (code, output) = run(m, argv);
             let probe = argv.join(" ");
             if i + m.smoke.len() >= steps.len() {
                 smoke.push(Probe {
@@ -172,8 +201,13 @@ fn main() {
         }
         (None, smoke)
     };
-    let mise_use =
-        |v: &str| run(&["mise", "use", "-g", &format!("{key}@{v}")].map(String::from)).0 == 0;
+    // No deadline: mise may be downloading.
+    let mise_use = |v: &str| {
+        Command::new("mise")
+            .args(["use", "-g", &format!("{key}@{v}")])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    };
     let (prev, before) = old.map_or((None, None), |r| (Some(r.version), r.previous));
     let (version, previous, failed, smoke, line) = if mode == "--back" {
         let p = before.unwrap_or_else(|| die(format!("{tool}: no previous version")));
@@ -190,7 +224,7 @@ fn main() {
     } else {
         let target = prev.as_deref().and_then(manifest);
         for argv in &m.drain {
-            if run(argv).0 != 0 {
+            if run(&m, argv).0 != 0 {
                 println!("{tool}: {} refused; nothing swapped", argv.join(" "));
                 exit(1)
             }
@@ -234,8 +268,9 @@ fn main() {
         version,
     };
     let tmp = path.with_extension("tmp");
-    fs::create_dir_all(&dir)
-        .and_then(|()| fs::write(&tmp, serde_json::to_string(&record)?))
+    serde_json::to_vec(&record)
+        .map_err(io::Error::from)
+        .and_then(|b| fs::write(&tmp, b))
         .and_then(|()| fs::rename(&tmp, &path))
         .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", path.display())));
     println!("{line}");

@@ -1,5 +1,9 @@
 use serde_json::{Value, json};
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{
+    fs::{self, File},
+    os::unix::fs::PermissionsExt,
+    process::Command,
+};
 
 // One host walked through every branch: `mise`, `launchctl` and the tool's commands are one sh stub
 // that logs its argv; `<name>.code` makes that stub exit non-zero, and `mise use` clears those
@@ -12,6 +16,10 @@ fn hotswap() {
     for (name, body) in [
         ("bad/hotswap.toml", "agents = 1"),
         ("gone/hotswap.toml", r#"smoke = [["absent"]]"#),
+        (
+            "slow/hotswap.toml",
+            "smoke = [[\"sleep\", \"3\"]]\ntimeout = 1",
+        ),
         (
             "t/hotswap.toml",
             r#"agents = ["dev.gigantic.t"]
@@ -42,7 +50,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
             e("t", v == "2", true, "2"),
             e("t", v == "3", true, "3")
         ]);
-        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
+        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
         fs::write(p.join("ls.json"), all.to_string()).unwrap();
     };
     let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();
@@ -230,12 +238,39 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         format!("2\nt 0: not installed\n{ls_log}")
     );
 
-    // a missing command is a red probe; an unwritable record exits 2
+    // another hotswap holds the lock: refused, but --check reads on
+    let held = File::create(state_dir.join("t.lock")).unwrap();
+    held.try_lock().unwrap();
+    assert_eq!(
+        run(&["t"]),
+        format!("2\nt: another hotswap is running\n{ls_log}")
+    );
+    assert_eq!(
+        run(&["t", "--check"]),
+        format!("0\nt 3: red at chk x\n{ls_log}")
+    );
+    drop(held);
+
+    // a probe past its deadline is a red probe
+    assert_eq!(
+        run(&["slow"]),
+        format!("1\nslow: sleep 3 failed; no previous version\n{ls_log}")
+    );
+    assert_eq!(
+        rec("slow")["smoke"],
+        json!([{"code": -1, "output": "timed out after 1s", "probe": "sleep 3"}])
+    );
+
+    // a missing command is a red probe; an unwritable lock or record exits 2
     assert_eq!(
         run(&["gone"]),
         format!("1\ngone: absent failed; no previous version\n{ls_log}")
     );
     assert_eq!(rec("gone")["smoke"][0]["code"], -1);
-    fs::create_dir(state_dir.join("bare.tmp")).unwrap();
-    assert!(run(&["bare"]).starts_with("2\nbare: "));
+    let bare = format!("2\nbare: {}.", state_dir.join("bare").display());
+    for f in ["bare.lock", "bare.tmp"] {
+        fs::create_dir(state_dir.join(f)).unwrap();
+        assert!(run(&["bare"]).starts_with(&bare));
+        fs::remove_dir(state_dir.join("bare.lock")).ok();
+    }
 }
