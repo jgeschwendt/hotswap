@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     env,
     fmt::Display,
-    fs, mem,
+    fs,
     path::PathBuf,
     process::{Command, exit},
     time::SystemTime,
@@ -14,6 +14,7 @@ use std::{
 struct Install {
     active: bool,
     install_path: PathBuf,
+    installed: bool,
     version: String,
 }
 
@@ -51,6 +52,8 @@ fn die(msg: impl Display) -> ! {
 }
 
 fn main() {
+    // A mise.toml in the caller's cwd would shadow the global pins; every child inherits `/`.
+    env::set_current_dir("/").ok();
     let args: Vec<String> = env::args().skip(1).collect();
     let (tool, mode) = match &args[..] {
         [t] if !t.starts_with('-') => (t, ""),
@@ -59,67 +62,86 @@ fn main() {
     };
     let ls = Command::new("mise")
         .args(["ls", "--global", "--json"])
-        .output();
-    let tools: BTreeMap<String, Vec<Install>> = ls
-        .ok()
-        .and_then(|o| serde_json::from_slice(&o.stdout).ok())
-        .unwrap_or_default();
-    let Some((key, cur)) = tools
+        .output()
+        .unwrap_or_else(|e| die(format!("mise: {e}")));
+    if !ls.status.success() {
+        die(format!(
+            "mise: {}",
+            String::from_utf8_lossy(&ls.stderr).trim()
+        ));
+    }
+    let tools: BTreeMap<String, Vec<Install>> =
+        serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die(format!("mise: {e}")));
+    let Some((key, installs)) = tools
         .into_iter()
-        .find(|(k, _)| k.rsplit([':', '/']).next() == Some(tool))
-        .and_then(|(k, v)| Some((k, v.into_iter().find(|i| i.active)?)))
+        .find(|(k, v)| k.rsplit([':', '/']).next() == Some(tool) && v.iter().any(|i| i.active))
     else {
         die(format!("{tool}: no active mise install"))
     };
-    let manifest = fs::read_to_string(cur.install_path.join("hotswap.toml")).unwrap_or_default();
-    let m: Manifest =
-        toml::from_str(&manifest).unwrap_or_else(|e| die(format!("{tool}: hotswap.toml: {e}")));
+    let [cur] = installs.iter().filter(|i| i.active).collect::<Vec<_>>()[..] else {
+        die(format!("{tool}: several active versions"))
+    };
+    // A version's own manifest; None when mise holds no installed entry for it.
+    let manifest = |v: &str| -> Option<Manifest> {
+        let i = installs.iter().find(|i| i.version == v && i.installed)?;
+        let s = fs::read_to_string(i.install_path.join("hotswap.toml")).unwrap_or_default();
+        Some(toml::from_str(&s).unwrap_or_else(|e| die(format!("{tool}: hotswap.toml: {e}"))))
+    };
+    let m = manifest(&cur.version)
+        .unwrap_or_else(|| die(format!("{tool} {}: not installed", cur.version)));
     let dir = PathBuf::from(env::var_os("HOME").unwrap_or_default()).join(".local/state/hotswap");
     let path = dir.join(format!("{tool}.json"));
     let old: Option<Record> = fs::read(&path)
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok());
+    // Settled on this version, green or red: only a new version or `--back` moves it.
+    if let Some(r) = old
+        .as_ref()
+        .filter(|r| mode != "--back" && r.version == cur.version)
+    {
+        let state = if r.ok {
+            "up to date".into()
+        } else {
+            format!("red at {}", r.failed.as_deref().unwrap_or_default())
+        };
+        println!("{tool} {}: {state}", r.version);
+        exit(i32::from(!r.ok && mode.is_empty()))
+    }
     let uid = Command::new("id")
         .arg("-u")
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
     let uid = uid.unwrap_or_default();
-    let mut tail: Vec<Vec<String>> = m
-        .agents
-        .iter()
-        .map(|a| {
+    // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke probes.
+    let steps = |m: &Manifest| -> Vec<Vec<String>> {
+        let kick = m.agents.iter().map(|a| {
             ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
                 .map(String::from)
                 .into()
-        })
-        .collect();
-    tail.extend((!m.setup.is_empty()).then_some(m.setup));
-    if mode != "--back"
-        && old
-            .as_ref()
-            .is_some_and(|r| r.ok && r.version == cur.version)
-    {
-        return println!("{tool} {}: up to date", cur.version);
-    }
+        });
+        (!m.setup.is_empty())
+            .then(|| m.setup.clone())
+            .into_iter()
+            .chain(kick)
+            .chain(m.smoke.clone())
+            .collect()
+    };
     if mode == "--check" {
         println!(
             "{tool}: {} → {}",
             old.map_or("none".into(), |r| r.version),
             cur.version
         );
-        for argv in m.drain.iter().chain(&tail).chain(&m.smoke) {
+        for argv in m.drain.iter().chain(&steps(&m)) {
             println!("  {}", argv.join(" "));
         }
         return;
     }
-    // Runs `pre`, then the kickstarts and setup, then the smoke probes; stops at the first failure.
-    let swap = |pre: &[Vec<String>]| {
-        let mut smoke = vec![];
-        for (i, argv) in pre.iter().chain(&tail).chain(&m.smoke).enumerate() {
-            let run = Command::new(argv.first().unwrap_or(&String::new()))
-                .args(argv.iter().skip(1))
-                .output();
-            let (code, output) = run.map_or_else(
+    let run = |argv: &[String]| {
+        Command::new(argv.first().unwrap_or(&String::new()))
+            .args(argv.iter().skip(1))
+            .output()
+            .map_or_else(
                 |e| (-1, e.to_string()),
                 |o| {
                     (
@@ -127,9 +149,16 @@ fn main() {
                         String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into(),
                     )
                 },
-            );
+            )
+    };
+    // Runs a manifest's steps; stops at the first failure.
+    let swap = |m: &Manifest| {
+        let steps = steps(m);
+        let mut smoke = vec![];
+        for (i, argv) in steps.iter().enumerate() {
+            let (code, output) = run(argv);
             let probe = argv.join(" ");
-            if i >= pre.len() + tail.len() {
+            if i + m.smoke.len() >= steps.len() {
                 smoke.push(Probe {
                     code,
                     output,
@@ -142,38 +171,56 @@ fn main() {
         }
         (None, smoke)
     };
-    let back = mode == "--back";
-    let mise_use = |v: &str| {
-        vec![
-            ["mise", "use", "-g", &format!("{key}@{v}")]
-                .map(String::from)
-                .to_vec(),
-        ]
-    };
-    let (mut version, mut previous, pre) = if back {
-        let p = old
-            .and_then(|r| r.previous)
-            .unwrap_or_else(|| die(format!("{tool}: no previous version")));
-        (p.clone(), Some(cur.version), mise_use(&p))
+    let mise_use =
+        |v: &str| run(&["mise", "use", "-g", &format!("{key}@{v}")].map(String::from)).0 == 0;
+    let (prev, before) = old.map_or((None, None), |r| (Some(r.version), r.previous));
+    let (version, previous, failed, smoke, line) = if mode == "--back" {
+        let p = before.unwrap_or_else(|| die(format!("{tool}: no previous version")));
+        let t = manifest(&p).unwrap_or_else(|| die(format!("{tool} {p}: not installed")));
+        if !mise_use(&p) {
+            println!("{tool}: mise use {key}@{p} failed");
+            exit(1)
+        }
+        let (failed, smoke) = swap(&t);
+        let line = failed
+            .as_ref()
+            .map(|f| format!("{tool}: {f} failed on {p}; no second rollback"));
+        (p, Some(cur.version.clone()), failed, smoke, line)
     } else {
-        let p = old.map(|r| r.version).filter(|v| *v != cur.version);
-        (cur.version, p, m.drain)
-    };
-    let (failed, smoke) = swap(&pre);
-    let line = match &failed {
-        None => format!("{tool} {version}: green, {} smoke probes", smoke.len()),
-        Some(f) if back => format!("{tool}: {f} failed on {version}; no second rollback"),
-        Some(f) => match previous.take() {
-            None => format!("{tool}: {f} failed; no previous version"),
-            Some(p) => {
-                let (again, _) = swap(&mise_use(&p));
-                previous = Some(mem::replace(&mut version, p));
-                let again = again.map_or(String::new(), |a| format!(", where {a} failed too"));
-                format!("{tool}: {f} failed; rolled back to {version}{again}")
+        let target = prev.as_deref().and_then(manifest);
+        for argv in &m.drain {
+            if run(argv).0 != 0 {
+                println!("{tool}: {} refused; nothing swapped", argv.join(" "));
+                exit(1)
             }
-        },
+        }
+        let (mut failed, mut smoke) = swap(&m);
+        let (mut version, mut previous) = (cur.version.clone(), prev.clone());
+        let line = failed.clone().map(|f| {
+            let why = match (prev, target) {
+                (None, _) => "no previous version".into(),
+                (Some(p), None) => format!("{p} not installed"),
+                (Some(p), Some(_)) if !mise_use(&p) => format!("mise use {key}@{p} failed"),
+                (Some(p), Some(t)) => {
+                    let (again, rest) = swap(&t);
+                    smoke.extend(rest);
+                    (version, previous) = (p, before);
+                    failed = Some(
+                        again
+                            .as_ref()
+                            .map_or(f.clone(), |a| format!("{f}; after rollback {a}")),
+                    );
+                    let again = again.map_or(String::new(), |a| format!(", where {a} failed too"));
+                    format!("rolled back to {version}{again}")
+                }
+            };
+            format!("{tool}: {f} failed; {why}")
+        });
+        (version, previous, failed, smoke, line)
     };
     let code = i32::from(failed.is_some());
+    let line =
+        line.unwrap_or_else(|| format!("{tool} {version}: green, {} smoke probes", smoke.len()));
     let at = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
