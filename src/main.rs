@@ -166,9 +166,10 @@ fn main() {
         Some(f) => match previous.take() {
             None => format!("{tool}: {f} failed; no previous version"),
             Some(p) => {
-                swap(&mise_use(&p));
+                let (again, _) = swap(&mise_use(&p));
                 previous = Some(mem::replace(&mut version, p));
-                format!("{tool}: {f} failed; rolled back to {version}")
+                let again = again.map_or(String::new(), |a| format!(", where {a} failed too"));
+                format!("{tool}: {f} failed; rolled back to {version}{again}")
             }
         },
     };
