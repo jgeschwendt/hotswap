@@ -7,7 +7,8 @@ use std::{
 
 // One host walked through every branch: `mise`, `launchctl` and the tool's commands are one sh stub
 // that logs its argv; `<name>.code` makes that stub exit non-zero, and `mise use` clears those
-// unless `sticky` exists. `mise ls` answers only from `/`; the temp dir's `&<>` must be escaped in the plist.
+// unless `sticky` exists, and a one-shot `crash` SIGKILLs its caller. `mise ls` answers only from
+// `/`; the temp dir's `&<>` must be escaped in the plist.
 #[test]
 fn hotswap() {
     let d = tempfile::Builder::new().prefix("hot&<>").tempdir().unwrap();
@@ -40,7 +41,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     // the exact log match
     for name in ["bin/chk", "bin/launchctl", "bin/mise", "bin/t", "t/hotswap"] {
         let stub = format!(
-            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && exec cat '{0}/ls.json'\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
+            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && exec cat '{0}/ls.json'\n[ \"$n $1\" = 'mise use' ] && rm '{0}/crash' 2>/dev/null && kill -9 $PPID\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
             p.display()
         );
         fs::write(p.join(name), stub).unwrap();
@@ -75,7 +76,8 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         let log = fs::read_to_string(p.join("log")).unwrap_or_default();
         fs::remove_file(p.join("log")).ok();
         let out = String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into_owned();
-        format!("{}\n{out}{log}", o.status.code().unwrap())
+        // a signal death reads -1
+        format!("{}\n{out}{log}", o.status.code().unwrap_or(-1))
             .replace(&format!("gui/{}", uid.trim()), "gui/$UID")
     };
     let run = |args: &[&str]| go(args, &[]);
@@ -289,6 +291,12 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     );
     assert_eq!(state(), r#""1" "0" false "chk x""#);
     assert_eq!(probes(), r#""t version" 0, "chk x" 3, "chk one" 0"#);
+    // a version that held through a rollback is a rollback target again
+    code("chk.code");
+    assert_eq!(
+        run(&["t"]),
+        red("rolled back to 1", &format!("{}chk one\n", use_log("1")))
+    );
     // the rollback goes red too
     put("1");
     code("chk.code");
@@ -302,6 +310,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     );
     assert_eq!(state(), r#""1" "0" false "chk x; after rollback chk one""#);
     assert_eq!(probes(), r#""t version" 0, "chk x" 3, "chk one" 3"#);
+    assert_eq!(run(&["t"]), red("1 is red; no rollback", ""));
     // mise use refuses: the failed version stays current
     put("1");
     code("mise.code");
@@ -322,6 +331,19 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         )
     );
     assert_eq!(state(), r#""1" "3" false "chk one""#);
+    // a crash in the rollback's mise use leaves the failed version's red record; once the pin
+    // moved, the next run swaps the pinned version and never rolls back onto the red one
+    put("2");
+    fs::write(p.join("crash"), "").unwrap();
+    assert_eq!(
+        run(&["t"]),
+        format!("-1\n{ls_log}{swap_log}{}", use_log("2"))
+    );
+    assert_eq!(state(), r#""3" "2" false "chk x""#);
+    ls("2");
+    assert_eq!(run(&["t"]), red("3 is red; no rollback", ""));
+    assert_eq!(state(), r#""2" "3" false "chk x""#);
+    ls("3");
     // the previous version is gone from mise
     put("0");
     assert_eq!(run(&["t"]), red("0 not installed", ""));

@@ -32,7 +32,7 @@ struct Manifest {
     timeout: Option<u64>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct Probe {
     code: i32,
     output: String,
@@ -44,6 +44,9 @@ struct Record {
     at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     failed: Option<String>,
+    /// A rollback onto `version` passed its own steps: red, still a rollback target.
+    #[serde(default)]
+    held: bool,
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     previous: Option<String>,
@@ -356,7 +359,24 @@ fn main() {
             .output()
             .is_ok_and(|o| o.status.success())
     };
-    let (prev, before) = old.map_or((None, None), |r| (Some(r.version), r.previous));
+    // Stamped, synced and swapped in whole: even a power loss leaves the old record or the new one.
+    let save = |mut r: Record| {
+        r.at = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let tmp = path.with_extension("tmp");
+        serde_json::to_vec(&r)
+            .map_err(io::Error::from)
+            .and_then(|b| fs::write(&tmp, b))
+            .and_then(|()| File::open(&tmp)?.sync_all())
+            .and_then(|()| fs::rename(&tmp, &path))
+            .and_then(|()| File::open(&dir)?.sync_all())
+            .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", path.display())));
+    };
+    let (prev, before, green) = old.map_or((None, None, false), |r| {
+        (Some(r.version), r.previous, r.ok || r.held)
+    });
+    let mut held = false;
     let (version, previous, failed, smoke, line) = if mode == "--back" {
         let p = before.unwrap_or_else(|| die(format!("{tool}: no previous version")));
         let t = manifest(&p).unwrap_or_else(|| die(format!("{tool} {p}: not installed")));
@@ -379,15 +399,27 @@ fn main() {
         }
         let (mut failed, mut smoke) = swap(&m);
         let (mut version, mut previous) = (cur.version.clone(), prev.clone());
+        // recorded before any rollback: a crash past its mise use then reads red, never the
+        // previous version's green on its new exact pin
+        save(Record {
+            at: 0,
+            failed: failed.clone(),
+            held,
+            ok: failed.is_none(),
+            previous: previous.clone(),
+            smoke: smoke.clone(),
+            version: version.clone(),
+        });
         let line = failed.clone().map(|f| {
             let why = match (prev, target) {
                 (None, _) => "no previous version".into(),
+                (Some(p), _) if !green => format!("{p} is red; no rollback"),
                 (Some(p), None) => format!("{p} not installed"),
                 (Some(p), Some(_)) if !mise_use(&p) => format!("mise use {key}@{p} failed"),
                 (Some(p), Some(t)) => {
                     let (again, rest) = swap(&t);
                     smoke.extend(rest);
-                    (version, previous) = (p, before);
+                    (version, previous, held) = (p, before, again.is_none());
                     failed = Some(
                         again
                             .as_ref()
@@ -404,23 +436,15 @@ fn main() {
     let code = i32::from(failed.is_some());
     let line =
         line.unwrap_or_else(|| format!("{tool} {version}: green, {} smoke probes", smoke.len()));
-    let at = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    let record = Record {
-        at,
+    save(Record {
+        at: 0,
         ok: failed.is_none(),
         failed,
+        held,
         previous,
         smoke,
         version,
-    };
-    let tmp = path.with_extension("tmp");
-    serde_json::to_vec(&record)
-        .map_err(io::Error::from)
-        .and_then(|b| fs::write(&tmp, b))
-        .and_then(|()| fs::rename(&tmp, &path))
-        .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", path.display())));
+    });
     println!("{line}");
     exit(code)
 }
