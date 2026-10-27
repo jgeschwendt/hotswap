@@ -223,7 +223,9 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
 # drain = [...]                                   <span class="snippet-note"># optional; a shift keeps the binary it started on</span>
 setup  = ["sandman", "setup"]                     <span class="snippet-note"># run after every swap</span>
 smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]
-timeout = 120   <span class="snippet-note"># seconds per step</span></pre>
+timeout = 120   <span class="snippet-note"># seconds per step; expiry kills the step's process group</span></pre>
+  <p class="docs-note">A step that exits while a background child still holds its output is
+    waited out to the deadline, then judged by its own exit code — detach daemons from stdout.</p>
 </section>
 
 <!-- ※ bifrost -->

@@ -18,7 +18,7 @@ fn hotswap() {
         ("gone/hotswap.toml", r#"smoke = [["absent"]]"#),
         (
             "slow/hotswap.toml",
-            "smoke = [[\"sh\", \"-c\", \"sleep 3 & echo up\"], [\"sleep\", \"3\"]]\ntimeout = 1",
+            "smoke = [[\"sh\", \"-c\", \"sleep 3 & echo up\"], [\"sh\", \"-c\", \"(sleep 2; touch ~/m) & sleep 3\"]]\ntimeout = 1",
         ),
         (
             "t/hotswap.toml",
@@ -251,15 +251,19 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     );
     drop(held);
 
-    // a probe past its deadline is a red probe; one whose background child holds the pipe keeps its code
+    // a probe past its deadline is a red probe and its whole group dies; one whose background child
+    // holds the pipe keeps its code
+    let late = "sh -c (sleep 2; touch ~/m) & sleep 3";
     assert_eq!(
         run(&["slow"]),
-        format!("1\nslow: sleep 3 failed; no previous version\n{ls_log}")
+        format!("1\nslow: {late} failed; no previous version\n{ls_log}")
     );
     assert_eq!(
         rec("slow")["smoke"],
-        json!([{"code": 0, "output": "output held open past 1s", "probe": "sh -c sleep 3 & echo up"}, {"code": -1, "output": "timed out after 1s", "probe": "sleep 3"}])
+        json!([{"code": 0, "output": "output held open past 1s", "probe": "sh -c sleep 3 & echo up"}, {"code": -1, "output": "timed out after 1s", "probe": late}])
     );
+    std::thread::sleep(std::time::Duration::from_secs(2));
+    assert!(!p.join("m").exists());
 
     // a missing command is a red probe; an unwritable lock or record exits 2
     assert_eq!(

@@ -6,6 +6,7 @@ use std::{
     fmt::Display,
     fs::{self, File},
     io::{self, Read, pipe},
+    os::unix::process::CommandExt,
     path::PathBuf,
     process::{Command, exit},
     thread,
@@ -154,13 +155,16 @@ fn main() {
     // One pipe for stdout and stderr, drained on a thread while the deadline is polled.
     let run = |m: &Manifest, argv: &[String]| {
         let secs = m.timeout.unwrap_or(120);
-        let end = Instant::now() + Duration::from_secs(secs);
+        // Capped: an absurd `timeout` would overflow the Instant and panic on every tick.
+        let end = Instant::now() + Duration::from_secs(secs.min(86_400));
         (|| {
             let (mut rx, tx) = pipe()?;
             let mut child = Command::new(argv.first().unwrap_or(&String::new()))
                 .args(argv.iter().skip(1))
                 .stdout(tx.try_clone()?)
                 .stderr(tx)
+                // Its own group, so the kill on expiry reaches whatever the step started too.
+                .process_group(0)
                 .spawn()?;
             let out = thread::spawn(move || {
                 let mut buf = vec![];
@@ -173,9 +177,10 @@ fn main() {
                 if Instant::now() > end {
                     return code.map_or_else(
                         || {
-                            child
-                                .kill()
-                                .map(|()| (-1, format!("timed out after {secs}s")))
+                            Command::new("kill")
+                                .args(["-KILL", "--", &format!("-{}", child.id())])
+                                .status()
+                                .map(|_| (-1, format!("timed out after {secs}s")))
                         },
                         |c| Ok((c, format!("output held open past {secs}s"))),
                     );
