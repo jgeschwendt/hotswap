@@ -192,9 +192,9 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     fs::remove_file(p.join("launchctl.code")).unwrap();
     remove("booted out", "absent");
 
-    // mise missing, failing, then talking nonsense
+    // mise missing, failing, then talking nonsense; GNU cat quotes the `&<>` path, BSD cat doesn't
     assert_eq!(
-        run(&["t"]),
+        run(&["t"]).replace('\'', ""),
         format!(
             "2\nmise: cat: {}/ls.json: No such file or directory\n{ls_log}",
             p.display()
