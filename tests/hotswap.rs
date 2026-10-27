@@ -87,7 +87,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     };
     let code = |name: &str| fs::write(p.join(name), "3").unwrap();
     let usage = "2\nusage: hotswap <tool> [--check | --back]\n";
-    let ls_log = "mise ls --global --json\n";
+    let ls_log = "mise ls --json\n";
     let swap_log =
         "t drain\nt setup\nlaunchctl kickstart -k gui/$UID/dev.gigantic.t\nt version\nchk x\n";
     let use_log = |v: &str| format!("mise use -g packslip:jgeschwendt/t@{v}\n");
