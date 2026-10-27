@@ -200,13 +200,16 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
   </header>
   <ul class="stack claims" role="list">
     <li><strong>launchd</strong> — render its templates (carrying <code class="code">{{HOME}}</code>,
-      as sandman's <code class="code">report plist</code> already does) and bootstrap the
+      as sandman's <code class="code">plist</code> already does) and bootstrap the
       agents.</li>
     <li><strong>routine docs</strong> — where the tool also ships orchestration for a host that runs
       routines, install them into <code class="code">~/.routines</code>, leaving an edited copy alone;
       the tool runs without them.</li>
     <li><strong>MCP</strong> — register its servers.</li>
     <li><strong>report</strong> — print what it did.</li>
+    <li><strong><code class="code">--remove</code></strong> — the inverse, for bifrost's uninstall toggle: boot the
+      agents out, remove the routine docs it installed and its MCP registrations, leave the
+      tool's data alone, print what it undid.</li>
   </ul>
   <h3 class="h3" id="setup-manifest"><code class="code">hotswap.toml</code></h3>
   <p class="docs-note">Shipped beside the binary in the release archive. Field names illustrative;
