@@ -149,9 +149,10 @@
 <section class="docs-section" id="mechanism" data-component="mechanism">
   <header>
     <h2 class="h2">Mechanism</h2>
-    <p class="docs-note">One binary, installed like any other tool. It acts when a tool's
-      <code class="code">mise ls</code> current version differs from the one its running processes
-      were started from.</p>
+    <p class="docs-note">One binary, installed like any other tool. It acts when a tool's current
+      version in the global config (<code class="code">mise ls --global --json</code>, run from
+      <code class="code">/</code> so no project pin hides it) differs from the version its record
+      holds; a red record stays put until a new version or <code class="code">--back</code>.</p>
   </header>
   <pre class="snippet">hotswap &lt;tool&gt;           <span class="snippet-note"># drain, swap, smoke, settle or roll back</span>
 hotswap &lt;tool&gt; --check   <span class="snippet-note"># report what would happen; touch nothing</span>
@@ -160,16 +161,19 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
     <li><strong>Drain</strong> — ask the tool to finish or hand over what it holds, by the tool's
       own contract: grove's server drain ladder; a sandman shift keeps the binary it started on
       (install replaces by unlink and create, so a running process is untouched and only new
-      processes see the new version); launchd agents are the swap point.</li>
-    <li><strong>Swap</strong> — <code class="code">launchctl kickstart -k</code> each agent the
-      tool declares (<code class="code">dev.gigantic.&lt;project&gt;[.&lt;job&gt;]</code>), then run
-      <code class="code">&lt;tool&gt; setup</code>.</li>
+      processes see the new version); launchd agents are the swap point. A refused drain aborts:
+      nothing swapped, nothing rolled back.</li>
+    <li><strong>Swap</strong> — run <code class="code">&lt;tool&gt; setup</code>, then
+      <code class="code">launchctl kickstart -k</code> each agent the tool declares
+      (<code class="code">dev.gigantic.&lt;project&gt;[.&lt;job&gt;]</code>); setup first, since it
+      bootstraps an agent a release adds and kickstarting an unloaded label fails.</li>
     <li><strong>Smoke</strong> — run the tool's declared smoke commands against the new
       processes.</li>
     <li><strong>Settle or roll back</strong> — green: record the swap in
       <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code>. Red:
-      <code class="code">mise use -g &lt;tool&gt;@&lt;previous&gt;</code>, kickstart again, smoke
-      again, exit 1 naming the failing probe, and leave the record saying why.</li>
+      <code class="code">mise use -g &lt;mise key&gt;@&lt;previous&gt;</code>, then setup, kickstart
+      and smoke under the previous version's own <code class="code">hotswap.toml</code>, exit 1
+      naming the failing probe, and leave the record saying why.</li>
   </ol>
   <div class="table-wrap">
     <table data-table>
@@ -182,8 +186,9 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
     </table>
   </div>
   <ul class="stack claims" role="list">
-    <li><strong>the record</strong> — version, time and smoke output per swap; a rollback's record
-      names the probe that failed.</li>
+    <li><strong>the record</strong> — the last swap only: version, previous, time, smoke output; a
+      rollback's record names the probe that failed, and the rollback's own if it went red too, and
+      keeps <code class="code">previous</code> off the version that failed.</li>
     <li><strong>never a version directory</strong> — hotswap never downloads, verifies or writes
       one; mise did.</li>
     <li><strong>no daemon</strong> — its launchd agent, another agent or bifrost decides when to call it.</li>
@@ -212,8 +217,8 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
       tool's data alone, print what it undid.</li>
   </ul>
   <h3 class="h3" id="setup-manifest"><code class="code">hotswap.toml</code></h3>
-  <p class="docs-note">Shipped beside the binary in the release archive. Field names illustrative;
-    the four duties — agents, smoke, setup, drain — are the contract.</p>
+  <p class="docs-note">Shipped at the root of the release archive (the install path). Every field
+    is optional; a tool without the file swaps with nothing to run.</p>
   <pre class="snippet">agents = ["dev.gigantic.sandman.report"]          <span class="snippet-note"># kickstarted on swap</span>
 # drain = [...]                                   <span class="snippet-note"># optional; a shift keeps the binary it started on</span>
 setup  = ["sandman", "setup"]                     <span class="snippet-note"># run after every swap</span>
