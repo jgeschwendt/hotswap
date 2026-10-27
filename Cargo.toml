@@ -1,0 +1,37 @@
+[package]
+name = "hotswap"
+version = "0.1.0"
+edition = "2024"
+description = "hotswap — the swap moment for the gigantic tools: drain, swap, smoke, settle or roll back"
+# SPDX id, not `license-file`: crates.io and dependency scanners read `license`.
+license = "PolyForm-Noncommercial-1.0.0"
+readme = "README.md"
+repository = "https://github.com/jgeschwendt/hotswap"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = { version = "1.1.3", default-features = false, features = ["parse", "serde"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Maximalist opt-out (the house lint discipline, verbatim): turn on the whole
+# strict, *stable* set (clippy::pedantic), then opt out the few we disagree
+# with, each with a reason. `cargo clippy -- -D warnings` promotes all of this
+# to errors.
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Inline `#[allow]`s must carry a reason — the `noInlineConfig` discipline.
+allow_attributes_without_reason = "warn"
+# --- opt-outs (with rationale) ---
+# Field names are wire names: mise's `install_path`, the record's `probe`.
+struct_field_names = "allow"
+# ≈ eslint `max-lines-per-function: off`; one straight-line `main` beats helpers called once.
+too_many_lines = "allow"
+
+[profile.release]
+strip = true
