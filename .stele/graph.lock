@@ -1,0 +1,125 @@
+{
+  "adrs": {},
+  "landmarks": {
+    "bifrost": {
+      "file": "docs/index.html",
+      "line": 223,
+      "node": "docs"
+    },
+    "install": {
+      "file": "docs/index.html",
+      "line": 117,
+      "node": "docs"
+    },
+    "mechanism": {
+      "file": "docs/index.html",
+      "line": 148,
+      "node": "docs"
+    },
+    "next": {
+      "file": "docs/index.html",
+      "line": 262,
+      "node": "docs"
+    },
+    "non-goals": {
+      "file": "docs/index.html",
+      "line": 246,
+      "node": "docs"
+    },
+    "release": {
+      "file": "docs/index.html",
+      "line": 83,
+      "node": "docs"
+    },
+    "setup": {
+      "file": "docs/index.html",
+      "line": 193,
+      "node": "docs"
+    },
+    "why": {
+      "file": "docs/index.html",
+      "line": 60,
+      "node": "docs"
+    }
+  },
+  "nodes": {
+    "/": {
+      "budget": null,
+      "claims": [],
+      "commands": {
+        "check": "mise run check",
+        "cover": "mise run cover",
+        "lint": "cargo clippy --all-targets -- -D warnings && cargo fmt --check",
+        "test": "cargo test"
+      },
+      "contains": [
+        "docs",
+        "src",
+        "tests"
+      ],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "/",
+      "kind": "system",
+      "purpose": "hotswap — the swap moment for a mise-installed gigantic tool (drain, kickstart its launchd agents, setup, smoke, then settle or roll back through `mise use -g`); one binary, no daemon."
+    },
+    "docs": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "docs",
+      "kind": "container",
+      "purpose": "the design — `index.html` (GitHub Pages) is the only design source — release contract, mechanism, `<tool> setup`, hotswap.toml, next shifts; `page.css` holds only what is hotswap's"
+    },
+    "src": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "src",
+      "kind": "container",
+      "purpose": "crate source — `main.rs` is the whole binary — arg parse, `mise ls` lookup, hotswap.toml, the drain → kickstart → setup → smoke run, rollback, the state record"
+    },
+    "tests": {
+      "budget": null,
+      "claims": [],
+      "commands": {},
+      "contains": [],
+      "declared": {
+        "allow": [],
+        "decided_by": [],
+        "depends": []
+      },
+      "extracted": {
+        "imports": []
+      },
+      "id": "tests",
+      "kind": "container",
+      "purpose": "end-to-end suite — `hotswap.rs` walks one temp $HOME through every branch with sh stubs for mise, launchctl and the tool's commands, asserting exit code, output and stub argv"
+    }
+  },
+  "version": 2
+}
