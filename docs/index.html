@@ -135,12 +135,13 @@
     <li><strong>no release-age hold</strong> — our tools set the tool option
       <code class="code">minimum_release_age = "0s"</code>; mise's default holds
       <code class="code">latest</code> 24 h.</li>
-    <li><strong>the <code class="code">hotswap</code> routine</strong> — a doc in
-      <code class="code">~/.routines</code>, every fifteen minutes on each host:
-      <code class="code">mise upgrade</code> for the gigantic tools, then
-      <code class="code">hotswap &lt;tool&gt;</code> for each that changed.</li>
-    <li><strong>the rest of the toolchain</strong> — the daily <code class="code">all-up</code>
-      routine keeps bumping it, unchanged.</li>
+    <li><strong>its own agent</strong> — <code class="code">dev.gigantic.hotswap</code>, a launchd
+      agent hotswap installs with <code class="code">hotswap setup</code>, every fifteen minutes on
+      each host: <code class="code">mise upgrade</code> for the gigantic tools, then
+      <code class="code">hotswap &lt;tool&gt;</code> for each that changed. Tools are independent at
+      runtime: nothing here requires routines, grove or sandman to run.</li>
+    <li><strong>the rest of the toolchain</strong> — whatever already bumps it on the host
+      (a daily <code class="code">mise upgrade</code>) keeps doing so, unchanged.</li>
   </ul>
 </section>
 
@@ -185,7 +186,7 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
       names the probe that failed.</li>
     <li><strong>never a version directory</strong> — hotswap never downloads, verifies or writes
       one; mise did.</li>
-    <li><strong>no daemon</strong> — a routine, launchd or bifrost decides when to call it.</li>
+    <li><strong>no daemon</strong> — its launchd agent, another agent or bifrost decides when to call it.</li>
   </ul>
 </section>
 
@@ -201,8 +202,9 @@ hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollbac
     <li><strong>launchd</strong> — render its templates (carrying <code class="code">{{HOME}}</code>,
       as sandman's <code class="code">report plist</code> already does) and bootstrap the
       agents.</li>
-    <li><strong>routines</strong> — install its routine docs into <code class="code">~/.routines</code>,
-      leaving an edited copy alone.</li>
+    <li><strong>routine docs</strong> — where the tool also ships orchestration for a host that runs
+      routines, install them into <code class="code">~/.routines</code>, leaving an edited copy alone;
+      the tool runs without them.</li>
     <li><strong>MCP</strong> — register its servers.</li>
     <li><strong>report</strong> — print what it did.</li>
   </ul>
@@ -269,7 +271,8 @@ smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]</pre>
       <code class="code">mise use -g packslip:jgeschwendt/sandman</code> is live on this Mac.</li>
     <li><strong>hotswap's own crate</strong> — <code class="code">hotswap &lt;tool&gt;</code>,
       <code class="code">--check</code>, <code class="code">--back</code>,
-      <code class="code">hotswap.toml</code>, the state record, the routine doc; 100 % coverage, code
+      <code class="code">hotswap.toml</code>, <code class="code">hotswap setup</code> and its
+      <code class="code">dev.gigantic.hotswap</code> agent, the state record; 100 % coverage, code
       golf, hk pre-push gate, stele adopted.</li>
     <li><strong>routines and stele</strong> adopt the release workflow and
       <code class="code">setup</code>.</li>
