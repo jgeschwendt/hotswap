@@ -64,7 +64,9 @@ fn main() {
     // A mise.toml in the caller's cwd would shadow the global pins; every child inherits `/`.
     env::set_current_dir("/").ok();
     let args: Vec<String> = env::args().skip(1).collect();
-    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
+    let home = env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map_or_else(|| die("HOME unset"), PathBuf::from);
     let uid = Command::new("id")
         .arg("-u")
         .output()
@@ -101,9 +103,18 @@ fn main() {
                         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 })
                 .unwrap_or_else(|| die("hotswap setup: no mise on PATH"));
-            let (d, h) = (dir.display(), home.display());
-            // mise x from `/` runs whichever hotswap is globally active, so the agent outlives its own
-            // swap; no RunAtLoad, since a load-time tick would race the swap that ran setup for the lock
+            let shims = env::var_os("MISE_DATA_DIR")
+                .map(PathBuf::from)
+                .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
+                .unwrap_or_else(|| home.join(".local/share/mise"))
+                .join("shims");
+            let esc = |p: &PathBuf| {
+                let p = p.display().to_string().replace('&', "&amp;");
+                p.replace('<', "&lt;").replace('>', "&gt;")
+            };
+            // a shim re-resolves the globally active hotswap on every exec (launchd's cwd is `/`), so
+            // the agent outlives its own swap; shims lead PATH so each step after the upgrade runs the
+            // new version; no RunAtLoad, since a load-time tick would race the swap that ran setup
             let xml = format!(
                 r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -112,25 +123,25 @@ fn main() {
   <key>Label</key><string>{LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{d}/mise</string>
-    <string>x</string>
-    <string>--</string>
-    <string>hotswap</string>
+    <string>{shims}/hotswap</string>
     <string>tick</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>HOME</key><string>{h}</string>
-    <key>PATH</key><string>{d}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <key>HOME</key><string>{home}</string>
+    <key>PATH</key><string>{shims}:{dir}:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
   <key>StartInterval</key><integer>900</integer>
   <key>RunAtLoad</key><false/>
   <key>ProcessType</key><string>Background</string>
-  <key>StandardOutPath</key><string>{h}/Library/Logs/{LABEL}.log</string>
-  <key>StandardErrorPath</key><string>{h}/Library/Logs/{LABEL}.log</string>
+  <key>StandardOutPath</key><string>{home}/Library/Logs/{LABEL}.log</string>
+  <key>StandardErrorPath</key><string>{home}/Library/Logs/{LABEL}.log</string>
 </dict>
 </plist>
-"#
+"#,
+                dir = esc(&dir),
+                home = esc(&home),
+                shims = esc(&shims),
             );
             // hotswap's own swap runs setup from inside the tick, which a bootout would kill
             if fs::read(&plist).is_ok_and(|b| b == xml.as_bytes()) && launchctl(&["print", &agent])
@@ -151,16 +162,23 @@ fn main() {
             return;
         }
         ["setup", "--remove"] => {
-            launchctl(&["bootout", &agent]);
-            fs::remove_file(&plist).ok();
-            let p = plist.display();
-            println!("hotswap setup --remove: {LABEL} booted out; {p} removed");
+            let out = ["not loaded", "booted out"][usize::from(launchctl(&["bootout", &agent]))];
+            let rm = ["absent", "removed"][usize::from(fs::remove_file(&plist).is_ok())];
+            println!(
+                "hotswap setup --remove: {LABEL} {out}; {} {rm}",
+                plist.display()
+            );
             return;
         }
         ["tick"] => {
             let keys: Vec<String> = ls()
                 .into_iter()
-                .filter(|(k, v)| k.starts_with(GIGANTIC) && v.iter().any(|i| i.active))
+                // those name a verb, not a tool: a `tick` child would tick again, without bound
+                .filter(|(k, v)| {
+                    k.strip_prefix(GIGANTIC)
+                        .is_some_and(|t| !["setup", "tick"].contains(&t))
+                        && v.iter().any(|i| i.active)
+                })
                 .map(|(k, _)| k)
                 .collect();
             if keys.is_empty() {
@@ -168,22 +186,24 @@ fn main() {
                 return;
             }
             // no deadline: mise may be downloading; red or not, versions may already differ
-            if !Command::new("mise")
+            let up = Command::new("mise")
                 .arg("upgrade")
                 .args(&keys)
                 .status()
-                .is_ok_and(|s| s.success())
-            {
+                .is_ok_and(|s| s.success());
+            if !up {
                 println!("hotswap tick: mise upgrade failed");
             }
-            let exe = env::current_exe().unwrap_or_default();
+            // through PATH's shims, the upgraded version; its own group, since a `hotswap setup`
+            // bootout of this job kills the job's group and would take the in-flight swap with it
             let red = keys.iter().filter(|k| {
-                !Command::new(&exe)
+                !Command::new("hotswap")
                     .arg(&k[GIGANTIC.len()..])
+                    .process_group(0)
                     .status()
                     .is_ok_and(|s| s.success())
             });
-            exit(i32::from(red.count() > 0))
+            exit(i32::from(red.count() > 0 || !up))
         }
         [t] if !t.starts_with('-') => (t, ""),
         [t, m @ ("--back" | "--check")] if !t.starts_with('-') => (t, m),
@@ -237,7 +257,7 @@ fn main() {
         exit(i32::from(!r.ok && mode.is_empty()))
     }
     // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke probes.
-    // never hotswap's own agent: the next tick finds a new hotswap through mise x, and a kick kills it
+    // never hotswap's own agent: the next tick finds a new hotswap through its shim, and a kick kills it
     let steps = |m: &Manifest| -> Vec<Vec<String>> {
         let kick = m.agents.iter().filter(|a| *a != LABEL).map(|a| {
             ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]

@@ -1,16 +1,16 @@
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{PermissionsExt, symlink},
     process::Command,
 };
 
 // One host walked through every branch: `mise`, `launchctl` and the tool's commands are one sh stub
 // that logs its argv; `<name>.code` makes that stub exit non-zero, and `mise use` clears those
-// unless `sticky` exists. `mise ls` answers only from `/`.
+// unless `sticky` exists. `mise ls` answers only from `/`; the temp dir's `&<>` must be escaped in the plist.
 #[test]
 fn hotswap() {
-    let d = tempfile::tempdir().unwrap();
+    let d = tempfile::Builder::new().prefix("hot&<>").tempdir().unwrap();
     let p = d.path();
     let bin = p.join("bin");
     for (name, body) in [
@@ -27,6 +27,7 @@ drain = [["t", "drain"]]
 setup = ["t", "setup"]
 smoke = [["t", "version"], ["chk", "x"]]"#,
         ),
+        ("t/mise", "not executable, so setup looks further"),
         ("t1/hotswap.toml", r#"smoke = [["chk", "one"]]"#),
     ] {
         fs::create_dir_all(p.join(name).parent().unwrap()).unwrap();
@@ -41,6 +42,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::write(bin.join(name), stub).unwrap();
         fs::set_permissions(bin.join(name), fs::Permissions::from_mode(0o755)).unwrap();
     }
+    symlink(env!("CARGO_BIN_EXE_hotswap"), bin.join("hotswap")).unwrap();
     // `t` 1 lives apart with its own manifest; `v` is the active one of 2 and 3
     let ls = |v: &str| {
         let e = |dir: &str, active: bool, installed: bool, version: &str| json!({"active": active, "install_path": p.join(dir), "installed": installed, "version": version});
@@ -50,17 +52,20 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
             e("t", v == "2", true, "2"),
             e("t", v == "3", true, "3")
         ]);
-        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
+        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "packslip:jgeschwendt/t1": one("t1", v != "1", true), "packslip:jgeschwendt/tick": one("t", v != "1", true), "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
         fs::write(p.join("ls.json"), all.to_string()).unwrap();
     };
     let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();
     // exit code, stdout + stderr, then the stubs' log
-    let run = |args: &[&str]| {
-        let path = format!("{}:/bin:/usr/bin", bin.display());
+    let go = |args: &[&str], envs: &[(&str, &str)]| {
+        let path = format!("{}/t:{}:/bin:/usr/bin", p.display(), bin.display());
         let o = Command::new(env!("CARGO_BIN_EXE_hotswap"))
             .args(args)
             .env("HOME", p)
             .env("PATH", path)
+            .env_remove("MISE_DATA_DIR")
+            .env_remove("XDG_DATA_HOME")
+            .envs(envs.iter().copied())
             .output()
             .unwrap();
         let log = fs::read_to_string(p.join("log")).unwrap_or_default();
@@ -69,6 +74,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         format!("{}\n{out}{log}", o.status.code().unwrap())
             .replace(&format!("gui/{}", uid.trim()), "gui/$UID")
     };
+    let run = |args: &[&str]| go(args, &[]);
     let state_dir = p.join(".local/state/hotswap");
     let rec = |tool: &str| {
         serde_json::from_slice::<Value>(&fs::read(state_dir.join(format!("{tool}.json"))).unwrap())
@@ -107,37 +113,80 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert_eq!(run(&[]), usage);
     assert_eq!(run(&["--back"]), usage);
     assert_eq!(run(&["t", "--x"]), usage);
+    assert_eq!(go(&["t"], &[("HOME", "")]), "2\nHOME unset\n");
 
-    // setup: fresh, unchanged, then a failing launchctl reloads and reports; --remove ignores it; an
-    // unwritable plist exits 2
+    // setup: shims from MISE_DATA_DIR, XDG_DATA_HOME, then HOME; unchanged; a failing launchctl
+    // reloads and reports; --remove reports what it undid; an unwritable plist exits 2
     let agent = p.join("Library/LaunchAgents/dev.gigantic.hotswap.plist");
     let a = agent.display();
     let bootout = "launchctl bootout gui/$UID/dev.gigantic.hotswap\n";
     let reload = format!("{bootout}launchctl bootstrap gui/$UID {a}\n");
     let print = "launchctl print gui/$UID/dev.gigantic.hotswap\n";
-    let fresh = format!("hotswap setup: {a} written; dev.gigantic.hotswap loaded, every 900s");
-    assert_eq!(run(&["setup"]), format!("0\n{fresh}\n{reload}"));
-    let b = bin.display();
-    let xml = fs::read_to_string(&agent).unwrap();
-    assert!(xml.contains(&format!("<array>\n    <string>{b}/mise</string>\n    <string>x</string>\n    <string>--</string>\n    <string>hotswap</string>\n    <string>tick</string>\n  </array>")));
-    assert!(xml.contains(&format!(
-        "<key>PATH</key><string>{b}:/usr/bin:/bin:/usr/sbin:/sbin</string>"
-    )));
+    let fresh =
+        format!("0\nhotswap setup: {a} written; dev.gigantic.hotswap loaded, every 900s\n{reload}");
+    let esc = |d: &std::path::Path| {
+        d.display()
+            .to_string()
+            .replace("hot&<>", "hot&amp;&lt;&gt;")
+    };
+    let (bins, home) = (esc(&bin), esc(p));
+    let plist = |shims: &str| {
+        format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.gigantic.hotswap</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{shims}/hotswap</string>
+    <string>tick</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>HOME</key><string>{home}</string>
+    <key>PATH</key><string>{shims}:{bins}:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key><integer>900</integer>
+  <key>RunAtLoad</key><false/>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardOutPath</key><string>{home}/Library/Logs/dev.gigantic.hotswap.log</string>
+  <key>StandardErrorPath</key><string>{home}/Library/Logs/dev.gigantic.hotswap.log</string>
+</dict>
+</plist>
+"#
+        )
+    };
+    for (envs, shims) in [
+        (
+            &[("MISE_DATA_DIR", "/m"), ("XDG_DATA_HOME", "/x")][..],
+            "/m/shims".into(),
+        ),
+        (&[("XDG_DATA_HOME", "/x")], "/x/mise/shims".into()),
+        (&[], format!("{home}/.local/share/mise/shims")),
+    ] {
+        assert_eq!(go(&["setup"], envs), fresh);
+        assert_eq!(fs::read_to_string(&agent).unwrap(), plist(&shims));
+    }
     let same = "hotswap setup: dev.gigantic.hotswap unchanged";
     assert_eq!(run(&["setup"]), format!("0\n{same}\n{print}"));
     code("launchctl.code");
     let failed = format!("hotswap setup: launchctl bootstrap gui/$UID {a} failed");
     assert_eq!(run(&["setup"]), format!("1\n{failed}\n{print}{reload}"));
-    let removed = format!("hotswap setup --remove: dev.gigantic.hotswap booted out; {a} removed");
-    assert_eq!(
-        run(&["setup", "--remove"]),
-        format!("0\n{removed}\n{bootout}")
-    );
+    let remove = |out: &str, rm: &str| {
+        let r = run(&["setup", "--remove"]);
+        assert_eq!(
+            r,
+            format!("0\nhotswap setup --remove: dev.gigantic.hotswap {out}; {a} {rm}\n{bootout}")
+        );
+    };
+    remove("not loaded", "removed");
     assert!(!agent.exists());
     fs::create_dir(&agent).unwrap();
     assert!(run(&["setup"]).starts_with(&format!("2\nhotswap setup: {a}: Is a directory")));
     fs::remove_dir(&agent).unwrap();
     fs::remove_file(p.join("launchctl.code")).unwrap();
+    remove("booted out", "absent");
 
     // mise missing, failing, then talking nonsense
     assert_eq!(
@@ -153,10 +202,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         format!("2\nmise: expected value at line 1 column 1\n{ls_log}")
     );
     fs::rename(bin.join("mise"), p.join("mise")).unwrap();
-    assert_eq!(
-        run(&["t"]),
-        "2\nmise: No such file or directory (os error 2)\n"
-    );
+    assert_eq!(run(&["t"]), "2\nmise: Permission denied (os error 13)\n");
     assert_eq!(run(&["setup"]), "2\nhotswap setup: no mise on PATH\n");
     fs::rename(p.join("mise"), bin.join("mise")).unwrap();
     ls("2");
@@ -210,10 +256,15 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     let smoke = json!([{"code": 0, "output": "version out\nversion err\n", "probe": "t version"}, {"code": 0, "output": "x out\nx err\n", "probe": "chk x"}]);
     assert_eq!(rec("t")["smoke"], smoke);
     assert_eq!(run(&["t"]), format!("0\nt 3: up to date\n{ls_log}"));
-    let upgrade = format!("{ls_log}mise upgrade packslip:jgeschwendt/t\n{ls_log}");
+    // tick: a failed upgrade still swaps every gigantic tool but `tick`, and reds the tick
+    let upgrade =
+        format!("{ls_log}mise upgrade packslip:jgeschwendt/t packslip:jgeschwendt/t1\n{ls_log}");
+    code("mise.code");
     assert_eq!(
         run(&["tick"]),
-        format!("0\nupgrade out\nt 3: up to date\nupgrade err\n{upgrade}")
+        format!(
+            "1\nupgrade out\nhotswap tick: mise upgrade failed\nt 3: up to date\nt1 1: green, 1 smoke probes\nupgrade err\n{upgrade}{ls_log}chk one\n"
+        )
     );
     assert_eq!(
         run(&["t", "--check"]),
@@ -316,12 +367,11 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::remove_dir(state_dir.join("bare.lock")).ok();
     }
 
-    // tick: a failed upgrade still swaps, and a red swap reds the tick; no gigantic tools, no-op
-    code("mise.code");
+    // a red swap reds the tick too; no gigantic tools, no-op
     assert_eq!(
         run(&["tick"]),
         format!(
-            "1\nupgrade out\nhotswap tick: mise upgrade failed\nt 3: red at chk x\nupgrade err\n{upgrade}"
+            "1\nupgrade out\nt 3: red at chk x\nt1 1: up to date\nupgrade err\n{upgrade}{ls_log}"
         )
     );
     ls("1");
