@@ -61,7 +61,8 @@ fn main() {
         _ => die("usage: hotswap <tool> [--check | --back]"),
     };
     let ls = Command::new("mise")
-        .args(["ls", "--global", "--json"])
+        // Not `--global`: it lists only the active version, so the rollback target would be invisible.
+        .args(["ls", "--json"])
         .output()
         .unwrap_or_else(|e| die(format!("mise: {e}")));
     if !ls.status.success() {

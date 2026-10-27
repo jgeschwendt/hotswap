@@ -150,8 +150,8 @@
   <header>
     <h2 class="h2">Mechanism</h2>
     <p class="docs-note">One binary, installed like any other tool. It acts when a tool's current
-      version in the global config (<code class="code">mise ls --global --json</code>, run from
-      <code class="code">/</code> so no project pin hides it) differs from the version its record
+      version (<code class="code">mise ls --json</code>, run from <code class="code">/</code> so only
+      the global config is active and no project pin hides it) differs from the version its record
       holds; a red record stays put until a new version or <code class="code">--back</code>.</p>
   </header>
   <pre class="snippet">hotswap &lt;tool&gt;           <span class="snippet-note"># drain, swap, smoke, settle or roll back</span>
@@ -289,6 +289,12 @@ smoke  = [["sandman", "version"], ["sandman", "shift", "status"]]</pre>
       <code class="code">selfupdate.rs</code> retire; the <code class="code">*-releases</code> mirror
       retires.</li>
   </ol>
+  <p class="docs-note plan-note-after"><strong>Before the agent ticks unattended:</strong> a deadline
+    on every step (a hung probe holds the launchd job forever), one lock per tool (the tick and a
+    bifrost click race on the record), never kickstarting the agent hotswap runs inside, a PATH in
+    the plist that reaches mise, and a call on the exact pin a rollback's
+    <code class="code">mise use -g</code> leaves, which keeps <code class="code">mise upgrade</code>
+    off the next fixed release.</p>
   <p class="docs-note plan-note-after"><strong>Owner-only:</strong> creating the repo, the first
     release of each tool, and the gigantic.dev proxy entry for
     <code class="code">/hotswap/</code>.</p>
