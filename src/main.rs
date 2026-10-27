@@ -166,18 +166,24 @@ fn main() {
                 let mut buf = vec![];
                 rx.read_to_end(&mut buf).map(|_| buf)
             });
-            while child.try_wait()?.is_none() {
+            // The pipe can outlive the child: a step that backgrounds a process hands it the write end.
+            let mut code = None;
+            while code.is_none() || !out.is_finished() {
+                code = code.or(child.try_wait()?.map(|s| s.code().unwrap_or(-1)));
                 if Instant::now() > end {
-                    child.kill()?;
-                    return Ok((-1, format!("timed out after {secs}s")));
+                    return code.map_or_else(
+                        || {
+                            child
+                                .kill()
+                                .map(|()| (-1, format!("timed out after {secs}s")))
+                        },
+                        |c| Ok((c, format!("output held open past {secs}s"))),
+                    );
                 }
                 thread::sleep(Duration::from_millis(20));
             }
             let buf = out.join().unwrap_or(Ok(vec![]))?;
-            Ok((
-                child.wait()?.code().unwrap_or(-1),
-                String::from_utf8_lossy(&buf).into(),
-            ))
+            Ok((code.unwrap_or(-1), String::from_utf8_lossy(&buf).into()))
         })()
         .unwrap_or_else(|e: io::Error| (-1, e.to_string()))
     };

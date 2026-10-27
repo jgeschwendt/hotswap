@@ -18,7 +18,7 @@ fn hotswap() {
         ("gone/hotswap.toml", r#"smoke = [["absent"]]"#),
         (
             "slow/hotswap.toml",
-            "smoke = [[\"sleep\", \"3\"]]\ntimeout = 1",
+            "smoke = [[\"sh\", \"-c\", \"sleep 3 & echo up\"], [\"sleep\", \"3\"]]\ntimeout = 1",
         ),
         (
             "t/hotswap.toml",
@@ -251,14 +251,14 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     );
     drop(held);
 
-    // a probe past its deadline is a red probe
+    // a probe past its deadline is a red probe; one whose background child holds the pipe keeps its code
     assert_eq!(
         run(&["slow"]),
         format!("1\nslow: sleep 3 failed; no previous version\n{ls_log}")
     );
     assert_eq!(
         rec("slow")["smoke"],
-        json!([{"code": -1, "output": "timed out after 1s", "probe": "sleep 3"}])
+        json!([{"code": 0, "output": "output held open past 1s", "probe": "sh -c sleep 3 & echo up"}, {"code": -1, "output": "timed out after 1s", "probe": "sleep 3"}])
     );
 
     // a missing command is a red probe; an unwritable lock or record exits 2
