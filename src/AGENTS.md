@@ -2,14 +2,7 @@
 
 ```stele
 kind: container
-# purpose:            # ≤200-char scent — fill it in (never auto-generated, §7)
-# commands: {}
-# invariants: []
-# hazards: []
-# edges:
-#   depends: []
-#   decided_by: [§ 0001]
-# budget:
+purpose: crate source — `main.rs` is the whole binary — arg parse, `mise ls` lookup, hotswap.toml, the drain → kickstart → setup → smoke run, rollback, the state record
 ```
 
 <!-- @stele --><!-- @end -->
