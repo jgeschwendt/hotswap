@@ -3,7 +3,7 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 245,
+      "line": 249,
       "node": "docs"
     },
     "install": {
@@ -18,12 +18,12 @@
     },
     "next": {
       "file": "docs/index.html",
-      "line": 284,
+      "line": 288,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 268,
+      "line": 272,
       "node": "docs"
     },
     "release": {
@@ -33,7 +33,7 @@
     },
     "setup": {
       "file": "docs/index.html",
-      "line": 212,
+      "line": 216,
       "node": "docs"
     },
     "why": {

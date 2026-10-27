@@ -184,10 +184,13 @@ hotswap tick              <span class="snippet-note"># what the agent runs throu
     <li><strong>Smoke</strong> — run the tool's declared smoke commands against the new
       processes.</li>
     <li><strong>Settle or roll back</strong> — green: record the swap in
-      <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code>. Red:
+      <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code>. Red: record the failed
+      version red, so a crash from here on reads red, never green;
       <code class="code">mise use -g &lt;mise key&gt;@&lt;previous&gt;</code>, then setup, kickstart
       and smoke under the previous version's own <code class="code">hotswap.toml</code>, exit 1
-      naming the failing probe, and leave the record saying why.</li>
+      naming the failing probe, and leave the record saying why. A previous version whose
+      record is red is never rolled back onto, unless it held: passed its own steps as a rollback
+      target. The failed version stays current, red.</li>
   </ol>
   <div class="table-wrap">
     <table data-table>
@@ -201,8 +204,9 @@ hotswap tick              <span class="snippet-note"># what the agent runs throu
   </div>
   <ul class="stack claims" role="list">
     <li><strong>the record</strong> — the last swap only: version, previous, time, smoke output; a
-      rollback's record names the probe that failed, and the rollback's own if it went red too, and
-      keeps <code class="code">previous</code> off the version that failed.</li>
+      rollback's record names the probe that failed, and the rollback's own if it went red too,
+      keeps <code class="code">previous</code> off the version that failed, and marks
+      <code class="code">held</code> when the rolled-back-onto version passed its own steps.</li>
     <li><strong>never a version directory</strong> — hotswap never downloads, verifies or writes
       one; mise did.</li>
     <li><strong>no daemon</strong> — its launchd agent, another agent or bifrost decides when to call it.</li>
@@ -294,9 +298,7 @@ timeout = 120   <span class="snippet-note"># seconds per step; expiry kills the 
       the shift-test and routine installs. The interim trunk-build routine
       <code class="code">sandman-install</code> retires when
       <code class="code">mise use -g packslip:jgeschwendt/sandman</code> is live on this Mac.</li>
-    <li><strong>hotswap</strong> — a record before a rollback's
-      <code class="code">mise use</code> (a crash there reads green); never roll back onto a red
-      record. First release is the owner's.</li>
+    <li><strong>hotswap</strong> — first release is the owner's.</li>
     <li><strong>routines and stele</strong> adopt the release workflow and
       <code class="code">setup</code>.</li>
     <li><strong>grove adopts</strong> — its <code class="code">update</code> module and
