@@ -21,7 +21,10 @@ jobs:
           # -D warnings, and a drifting toolchain drifts the lint set with it.
           toolchain: 1.94.0
           components: clippy, llvm-tools-preview, rustfmt
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      # mise.toml's pin: a drifting llvm-cov drifts what the 100 % counts.
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov@0.9.1
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo llvm-cov --fail-under-lines 100
