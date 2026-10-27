@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    # macOS is where hotswap runs, but the suite drives only sh stubs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        # Full history: stele's freshness class walks verified.sha..HEAD; a shallow
+        # clone prunes the watermark commit and makes churn uncountable.
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          # Must match mise.toml's pin: clippy runs the pedantic set under
+          # -D warnings, and a drifting toolchain drifts the lint set with it.
+          toolchain: 1.94.0
+          components: clippy, llvm-tools-preview, rustfmt
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo llvm-cov --fail-under-lines 100
+      # stele graph gate (check → emit --check). NEVER `stele build` here: build is the
+      # sole writer of .stele/graph.lock, so running it would make check pass trivially.
+      - run: curl -fsSL https://raw.githubusercontent.com/jgeschwendt/stele/main/scripts/install.sh | bash -s v0.3.0
+      - run: ~/.local/bin/stele check
+      - run: ~/.local/bin/stele emit --check

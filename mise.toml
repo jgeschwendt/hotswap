@@ -1,6 +1,21 @@
 # Pinned, not "stable": clippy runs with `-D warnings` against the pedantic set,
 # and a newer clippy carries lints the pinned one doesn't.
 [tools]
+"cargo:cargo-llvm-cov" = "0.9.1"
 # hk runs the pre-push gate (hk.pkl); `hk install --mise` wires it.
 hk = "2.5.0"
 rust = "1.94.0"
+
+[tasks.check]
+description = "the gate hk's pre-push runs: fmt, clippy, 100 % line coverage, the stele graph"
+run = [
+  "cargo fmt --check",
+  "cargo clippy --all-targets -- -D warnings",
+  { task = "cover" },
+  "stele check",
+  "stele emit --check",
+]
+
+[tasks.cover]
+description = "the end-to-end suite under llvm-cov; anything under 100 % of lines fails"
+run = "cargo llvm-cov --fail-under-lines 100"
