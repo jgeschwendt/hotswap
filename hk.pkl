@@ -1,0 +1,13 @@
+amends "package://github.com/jdx/hk/releases/download/v2.5.0/hk@2.5.0#/Config.pkl"
+// `hk install --mise` wires this once for every checkout (worktrees share one hooks dir).
+hooks {
+  // CI never runs `stele build`, so a stale graph.lock only fails remotely — one round-trip
+  // too late. git exports GIT_DIR and friends into every hook child; unset them first.
+  ["pre-push"] {
+    steps {
+      ["gate"] {
+        check = "unset $(git rev-parse --local-env-vars); mise run check"
+      }
+    }
+  }
+}
