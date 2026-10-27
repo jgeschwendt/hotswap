@@ -2,7 +2,8 @@ use serde_json::{Value, json};
 use std::{fs, os::unix::fs::PermissionsExt, process::Command};
 
 // One host walked through every branch: `mise`, `launchctl` and the tool's commands are one sh stub
-// that logs its argv; `<name>.code` makes that stub exit non-zero.
+// that logs its argv; `<name>.code` makes that stub exit non-zero, and `mise use` clears it
+// unless `sticky` exists.
 #[test]
 fn hotswap() {
     let d = tempfile::tempdir().unwrap();
@@ -25,7 +26,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     fs::create_dir_all(&bin).unwrap();
     for name in ["chk", "launchctl", "mise", "t"] {
         let stub = format!(
-            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && exec cat '{0}/ls.json'\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
+            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && exec cat '{0}/ls.json'\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
             p.display()
         );
         fs::write(bin.join(name), stub).unwrap();
@@ -138,6 +139,13 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert_eq!(run(&["t"]), rolled);
     assert_eq!(state(), r#""2" "3" false "chk x""#);
     assert_eq!(rec("t")["smoke"][1]["code"], 3);
+    // the rollback goes red too: said, not hidden
+    fs::write(p.join("chk.code"), "3").unwrap();
+    fs::write(p.join("sticky"), "").unwrap();
+    assert_eq!(
+        run(&["t"]),
+        rolled.replace("to 2\n", "to 2, where chk x failed too\n")
+    );
     assert_eq!(
         run(&["t", "--back"]),
         format!(
