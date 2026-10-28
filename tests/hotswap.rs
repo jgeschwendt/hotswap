@@ -41,7 +41,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     // the exact log match
     for name in ["bin/chk", "bin/launchctl", "bin/mise", "bin/t", "t/hotswap"] {
         let stub = format!(
-            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && exec cat '{0}/ls.json'\n[ \"$n $1\" = 'mise use' ] && rm '{0}/crash' 2>/dev/null && kill -9 $PPID\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
+            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && cd '{0}' && exec cat ls.json\n[ \"$n $1\" = 'mise use' ] && rm '{0}/crash' 2>/dev/null && kill -9 $PPID\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
             p.display()
         );
         fs::write(p.join(name), stub).unwrap();
@@ -189,14 +189,8 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     fs::remove_file(p.join("launchctl.code")).unwrap();
     assert_eq!(run(&undo), undone("booted out", "absent"));
 
-    // mise missing, failing, then talking nonsense; GNU cat quotes the `&<>` path, BSD cat doesn't
-    assert_eq!(
-        run(&["t"]).replace('\'', ""),
-        format!(
-            "2\nmise: cat: {}/ls.json: No such file or directory\n{ls_log}",
-            p.display()
-        )
-    );
+    // mise missing, failing, then talking nonsense
+    ls_only(&["t"], "2\nmise: cat: ls.json: No such file or directory");
     fs::write(p.join("ls.json"), "x").unwrap();
     ls_only(&["t"], "2\nmise: expected value at line 1 column 1");
     fs::rename(bin.join("mise"), p.join("mise")).unwrap();
