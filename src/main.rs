@@ -39,7 +39,7 @@ struct Probe {
     probe: String,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Default, Deserialize, Serialize)]
 struct Record {
     at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -74,8 +74,8 @@ fn main() {
     let uid = Command::new("id")
         .arg("-u")
         .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned());
-    let uid = uid.unwrap_or_default();
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
+        .unwrap_or_default();
     let ls = || -> BTreeMap<String, Vec<Install>> {
         let ls = Command::new("mise")
             // Not `--global`: it lists only the active version, so the rollback target would be invisible.
@@ -332,25 +332,27 @@ fn main() {
         })()
         .unwrap_or_else(|e: io::Error| (-1, e.to_string()))
     };
-    // Runs a manifest's steps; stops at the first failure.
-    let swap = |m: &Manifest| {
+    // Runs a manifest's steps into a record; stops at the first failure.
+    let swap = |m: &Manifest, version: String, previous: Option<String>| {
         let steps = steps(m);
-        let mut smoke = vec![];
+        let mut r = Record::default();
+        (r.previous, r.version) = (previous, version);
         for (i, argv) in steps.iter().enumerate() {
             let (code, output) = run(m, argv);
             let probe = argv.join(" ");
             if i + m.smoke.len() >= steps.len() {
-                smoke.push(Probe {
+                r.smoke.push(Probe {
                     code,
                     output,
                     probe: probe.clone(),
                 });
             }
             if code != 0 {
-                return (Some(probe), smoke);
+                r.failed = Some(probe);
+                break;
             }
         }
-        (None, smoke)
+        r
     };
     // No deadline: mise may be downloading.
     let mise_use = |v: &str| {
@@ -360,7 +362,8 @@ fn main() {
             .is_ok_and(|o| o.status.success())
     };
     // Stamped, synced and swapped in whole: even a power loss leaves the old record or the new one.
-    let save = |mut r: Record| {
+    let save = |r: &mut Record| {
+        r.ok = r.failed.is_none();
         r.at = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
@@ -376,19 +379,19 @@ fn main() {
     let (prev, before, green) = old.map_or((None, None, false), |r| {
         (Some(r.version), r.previous, r.ok || r.held)
     });
-    let mut held = false;
-    let (version, previous, failed, smoke, line) = if mode == "--back" {
+    let (mut rec, line) = if mode == "--back" {
         let p = before.unwrap_or_else(|| die(format!("{tool}: no previous version")));
         let t = manifest(&p).unwrap_or_else(|| die(format!("{tool} {p}: not installed")));
         if !mise_use(&p) {
             println!("{tool}: mise use {key}@{p} failed");
             exit(1)
         }
-        let (failed, smoke) = swap(&t);
-        let line = failed
+        let rec = swap(&t, p, Some(cur.version.clone()));
+        let line = rec
+            .failed
             .as_ref()
-            .map(|f| format!("{tool}: {f} failed on {p}; no second rollback"));
-        (p, Some(cur.version.clone()), failed, smoke, line)
+            .map(|f| format!("{tool}: {f} failed on {}; no second rollback", rec.version));
+        (rec, line)
     } else {
         let target = prev.as_deref().and_then(manifest);
         for argv in &m.drain {
@@ -397,54 +400,35 @@ fn main() {
                 exit(1)
             }
         }
-        let (mut failed, mut smoke) = swap(&m);
-        let (mut version, mut previous) = (cur.version.clone(), prev.clone());
+        let mut rec = swap(&m, cur.version.clone(), prev.clone());
         // recorded before any rollback: a crash past its mise use then reads red, never the
         // previous version's green on its new exact pin
-        save(Record {
-            at: 0,
-            failed: failed.clone(),
-            held,
-            ok: failed.is_none(),
-            previous: previous.clone(),
-            smoke: smoke.clone(),
-            version: version.clone(),
-        });
-        let line = failed.clone().map(|f| {
+        save(&mut rec);
+        let line = rec.failed.clone().map(|f| {
             let why = match (prev, target) {
                 (None, _) => "no previous version".into(),
                 (Some(p), _) if !green => format!("{p} is red; no rollback"),
                 (Some(p), None) => format!("{p} not installed"),
                 (Some(p), Some(_)) if !mise_use(&p) => format!("mise use {key}@{p} failed"),
                 (Some(p), Some(t)) => {
-                    let (again, rest) = swap(&t);
-                    smoke.extend(rest);
-                    (version, previous, held) = (p, before, again.is_none());
-                    failed = Some(
-                        again
-                            .as_ref()
-                            .map_or(f.clone(), |a| format!("{f}; after rollback {a}")),
-                    );
-                    let again = again.map_or(String::new(), |a| format!(", where {a} failed too"));
-                    format!("rolled back to {version}{again}")
+                    let back = swap(&t, p, before);
+                    rec.smoke.extend(back.smoke);
+                    (rec.version, rec.previous, rec.held) =
+                        (back.version, back.previous, back.failed.is_none());
+                    let again = back.failed.map_or(String::new(), |a| {
+                        rec.failed = Some(format!("{f}; after rollback {a}"));
+                        format!(", where {a} failed too")
+                    });
+                    format!("rolled back to {}{again}", rec.version)
                 }
             };
             format!("{tool}: {f} failed; {why}")
         });
-        (version, previous, failed, smoke, line)
+        (rec, line)
     };
-    let code = i32::from(failed.is_some());
-    let line =
-        line.unwrap_or_else(|| format!("{tool} {version}: green, {} smoke probes", smoke.len()));
-    save(Record {
-        at: 0,
-        ok: failed.is_none(),
-        failed,
-        held,
-        previous,
-        smoke,
-        version,
-    });
+    let n = rec.smoke.len();
+    let line = line.unwrap_or_else(|| format!("{tool} {}: green, {n} smoke probes", rec.version));
+    save(&mut rec);
     println!("{line}");
-    exit(code)
+    exit(i32::from(!rec.ok))
 }
