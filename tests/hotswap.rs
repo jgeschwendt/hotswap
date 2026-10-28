@@ -109,9 +109,12 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     let usage =
         "2\nusage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick\n";
     let ls_log = "mise ls --json\n";
+    // a run that stops after the `mise ls` lookup, printing `want`
+    let ls_only = |args: &[&str], want: &str| assert_eq!(run(args), format!("{want}\n{ls_log}"));
     let swap_log =
         "t drain\nt setup\nlaunchctl kickstart -k gui/$UID/dev.gigantic.t\nt version\nchk x\n";
     let use_log = |v: &str| format!("mise use -g packslip:jgeschwendt/t@{v}\n");
+    let rollback = format!("{}chk one\n", use_log("1"));
     let back_log = |v: &str| format!("{}{}", use_log(v), &swap_log[8..]);
     let red =
         |why: &str, rest: &str| format!("1\nt: chk x failed; {why}\n{ls_log}{swap_log}{rest}");
@@ -130,12 +133,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     let print = "launchctl print gui/$UID/dev.gigantic.hotswap\n";
     let fresh =
         format!("0\nhotswap setup: {a} written; dev.gigantic.hotswap loaded, every 900s\n{reload}");
-    let esc = |d: &std::path::Path| {
-        d.display()
-            .to_string()
-            .replace("hot&<>", "hot&amp;&lt;&gt;")
-    };
-    let (bins, home) = (esc(&bin), esc(p));
+    let (bins, home) = (bin.display(), p.display());
     let plist = |shims: &str| {
         format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -162,6 +160,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
 </plist>
 "#
         )
+        .replace("hot&<>", "hot&amp;&lt;&gt;")
     };
     for (envs, shims) in [
         (
@@ -179,20 +178,16 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     code("launchctl.code");
     let failed = format!("hotswap setup: launchctl bootstrap gui/$UID {a} failed");
     assert_eq!(run(&["setup"]), format!("1\n{failed}\n{print}{reload}"));
-    let remove = |out: &str, rm: &str| {
-        let r = run(&["setup", "--remove"]);
-        assert_eq!(
-            r,
-            format!("0\nhotswap setup --remove: dev.gigantic.hotswap {out}; {a} {rm}\n{bootout}")
-        );
+    let undo = ["setup", "--remove"];
+    let undone = |out: &str, rm: &str| {
+        format!("0\nhotswap setup --remove: dev.gigantic.hotswap {out}; {a} {rm}\n{bootout}")
     };
-    remove("not loaded", "removed");
-    assert!(!agent.exists());
+    assert_eq!(run(&undo), undone("not loaded", "removed"));
     fs::create_dir(&agent).unwrap();
     assert!(run(&["setup"]).starts_with(&format!("2\nhotswap setup: {a}: Is a directory")));
     fs::remove_dir(&agent).unwrap();
     fs::remove_file(p.join("launchctl.code")).unwrap();
-    remove("booted out", "absent");
+    assert_eq!(run(&undo), undone("booted out", "absent"));
 
     // mise missing, failing, then talking nonsense; GNU cat quotes the `&<>` path, BSD cat doesn't
     assert_eq!(
@@ -203,10 +198,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         )
     );
     fs::write(p.join("ls.json"), "x").unwrap();
-    assert_eq!(
-        run(&["t"]),
-        format!("2\nmise: expected value at line 1 column 1\n{ls_log}")
-    );
+    ls_only(&["t"], "2\nmise: expected value at line 1 column 1");
     fs::rename(bin.join("mise"), p.join("mise")).unwrap();
     assert_eq!(run(&["t"]), "2\nmise: Permission denied (os error 13)\n");
     assert_eq!(run(&["setup"]), "2\nhotswap setup: no mise on PATH\n");
@@ -220,18 +212,12 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         "two: several active versions",
     ] {
         let tool = msg.split([' ', ':']).next().unwrap();
-        assert_eq!(run(&[tool]), format!("2\n{msg}\n{ls_log}"));
+        ls_only(&[tool], &format!("2\n{msg}"));
     }
     assert!(run(&["bad"]).starts_with("2\nbad: hotswap.toml: TOML parse error"));
-    assert_eq!(
-        run(&["t", "--back"]),
-        format!("2\nt: no previous version\n{ls_log}")
-    );
+    ls_only(&["t", "--back"], "2\nt: no previous version");
     let plan = swap_log.trim_end().replace('\n', "\n  ");
-    assert_eq!(
-        run(&["t", "--check"]),
-        format!("0\nt: none → 2\n  {plan}\n{ls_log}")
-    );
+    ls_only(&["t", "--check"], &format!("0\nt: none → 2\n  {plan}"));
 
     // a refused drain: nothing swapped, nothing recorded
     code("t.code");
@@ -246,11 +232,8 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     fs::remove_file(p.join("t.code")).unwrap();
     assert_eq!(run(&["t"]), red("no previous version", ""));
     assert_eq!(state(), r#""2" null false "chk x""#);
-    assert_eq!(run(&["t"]), format!("1\nt 2: red at chk x\n{ls_log}"));
-    assert_eq!(
-        run(&["t", "--check"]),
-        format!("0\nt 2: red at chk x\n{ls_log}")
-    );
+    ls_only(&["t"], "1\nt 2: red at chk x");
+    ls_only(&["t", "--check"], "0\nt 2: red at chk x");
 
     fs::remove_file(p.join("chk.code")).unwrap();
     ls("3");
@@ -261,7 +244,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert_eq!(state(), r#""3" "2" true null"#);
     let smoke = json!([{"code": 0, "output": "version out\nversion err\n", "probe": "t version"}, {"code": 0, "output": "x out\nx err\n", "probe": "chk x"}]);
     assert_eq!(rec("t")["smoke"], smoke);
-    assert_eq!(run(&["t"]), format!("0\nt 3: up to date\n{ls_log}"));
+    ls_only(&["t"], "0\nt 3: up to date");
     // tick: a failed upgrade still swaps every gigantic tool but `tick`, and reds the tick
     let upgrade =
         format!("{ls_log}mise upgrade packslip:jgeschwendt/t packslip:jgeschwendt/t1\n{ls_log}");
@@ -272,10 +255,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
             "1\nupgrade out\nhotswap tick: mise upgrade failed\nt 3: up to date\nt1 1: green, 1 smoke probes\nupgrade err\n{upgrade}{ls_log}chk one\n"
         )
     );
-    assert_eq!(
-        run(&["t", "--check"]),
-        format!("0\nt 3: up to date\n{ls_log}")
-    );
+    ls_only(&["t", "--check"], "0\nt 3: up to date");
     assert_eq!(
         run(&["t", "--back"]),
         format!("0\nt 2: green, 2 smoke probes\n{ls_log}{}", back_log("2"))
@@ -285,28 +265,19 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     // red with a previous version: roll back under its own manifest, keeping the record's previous
     put("1");
     code("chk.code");
-    assert_eq!(
-        run(&["t"]),
-        red("rolled back to 1", &format!("{}chk one\n", use_log("1")))
-    );
+    assert_eq!(run(&["t"]), red("rolled back to 1", &rollback));
     assert_eq!(state(), r#""1" "0" false "chk x""#);
     assert_eq!(probes(), r#""t version" 0, "chk x" 3, "chk one" 0"#);
     // a version that held through a rollback is a rollback target again
     code("chk.code");
-    assert_eq!(
-        run(&["t"]),
-        red("rolled back to 1", &format!("{}chk one\n", use_log("1")))
-    );
+    assert_eq!(run(&["t"]), red("rolled back to 1", &rollback));
     // the rollback goes red too
     put("1");
     code("chk.code");
     code("sticky");
     assert_eq!(
         run(&["t"]),
-        red(
-            "rolled back to 1, where chk one failed too",
-            &format!("{}chk one\n", use_log("1"))
-        )
+        red("rolled back to 1, where chk one failed too", &rollback)
     );
     assert_eq!(state(), r#""1" "0" false "chk x; after rollback chk one""#);
     assert_eq!(probes(), r#""t version" 0, "chk x" 3, "chk one" 3"#);
@@ -325,10 +296,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     fs::remove_file(p.join("mise.code")).unwrap();
     assert_eq!(
         run(&["t", "--back"]),
-        format!(
-            "1\nt: chk one failed on 1; no second rollback\n{ls_log}{}chk one\n",
-            use_log("1")
-        )
+        format!("1\nt: chk one failed on 1; no second rollback\n{ls_log}{rollback}")
     );
     assert_eq!(state(), r#""1" "3" false "chk one""#);
     // a crash in the rollback's mise use leaves the failed version's red record; once the pin
@@ -348,30 +316,21 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     put("0");
     assert_eq!(run(&["t"]), red("0 not installed", ""));
     assert_eq!(state(), r#""3" "0" false "chk x""#);
-    assert_eq!(
-        run(&["t", "--back"]),
-        format!("2\nt 0: not installed\n{ls_log}")
-    );
+    ls_only(&["t", "--back"], "2\nt 0: not installed");
 
     // another hotswap holds the lock: refused, but --check reads on
     let held = File::create(state_dir.join("t.lock")).unwrap();
     held.try_lock().unwrap();
-    assert_eq!(
-        run(&["t"]),
-        format!("2\nt: another hotswap is running\n{ls_log}")
-    );
-    assert_eq!(
-        run(&["t", "--check"]),
-        format!("0\nt 3: red at chk x\n{ls_log}")
-    );
+    ls_only(&["t"], "2\nt: another hotswap is running");
+    ls_only(&["t", "--check"], "0\nt 3: red at chk x");
     drop(held);
 
     // a probe past its deadline is a red probe and its whole group dies; one whose background child
     // holds the pipe keeps its code
     let late = "sh -c (sleep 2; touch ~/m) & sleep 3";
-    assert_eq!(
-        run(&["slow"]),
-        format!("1\nslow: {late} failed; no previous version\n{ls_log}")
+    ls_only(
+        &["slow"],
+        &format!("1\nslow: {late} failed; no previous version"),
     );
     assert_eq!(
         rec("slow")["smoke"],
@@ -381,10 +340,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert!(!p.join("m").exists());
 
     // a missing command is a red probe; an unwritable lock or record exits 2
-    assert_eq!(
-        run(&["gone"]),
-        format!("1\ngone: absent failed; no previous version\n{ls_log}")
-    );
+    ls_only(&["gone"], "1\ngone: absent failed; no previous version");
     assert_eq!(rec("gone")["smoke"][0]["code"], -1);
     let bare = format!("2\nbare: {}.", state_dir.join("bare").display());
     for f in ["bare.lock", "bare.tmp"] {
@@ -405,8 +361,5 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         "2\nhotswap tick: path segment contains separator `:`\n"
     );
     ls("1");
-    assert_eq!(
-        run(&["tick"]),
-        format!("0\nhotswap tick: no gigantic tools\n{ls_log}")
-    );
+    ls_only(&["tick"], "0\nhotswap tick: no gigantic tools");
 }
