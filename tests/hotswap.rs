@@ -57,7 +57,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
             e("t", v == "2", true, "2"),
             e("t", v == "3", true, "3")
         ]);
-        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "packslip:jgeschwendt/t1": one("t1", v != "1", true), "packslip:jgeschwendt/tick": one("t", v != "1", true), "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
+        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "packslip:jgeschwendt/setup": one("t", v != "1", true), "packslip:jgeschwendt/t1": one("t1", v != "1", true), "packslip:jgeschwendt/tick": one("t", v != "1", true), "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
         fs::write(p.join("ls.json"), all.to_string()).unwrap();
     };
     let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();

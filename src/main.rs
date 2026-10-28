@@ -268,11 +268,8 @@ fn main() {
             .collect()
     };
     if mode == "--check" {
-        println!(
-            "{tool}: {} → {}",
-            old.map_or("none".into(), |r| r.version),
-            cur.version
-        );
+        let was = old.map_or("none".into(), |r| r.version);
+        println!("{tool}: {was} → {}", cur.version);
         for argv in m.drain.iter().chain(&steps(&m)) {
             println!("  {}", argv.join(" "));
         }
