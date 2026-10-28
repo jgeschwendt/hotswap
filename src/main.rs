@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     env,
-    fmt::Display,
     fs::{self, File},
     io::{self, Read, pipe},
     iter,
@@ -59,9 +58,8 @@ const GIGANTIC: &str = "packslip:jgeschwendt/";
 /// hotswap's own launchd agent.
 const LABEL: &str = "dev.gigantic.hotswap";
 
-fn die(msg: impl Display) -> ! {
-    eprintln!("{msg}");
-    exit(2)
+macro_rules! die {
+    ($($a:tt)*) => {{ eprintln!($($a)*); exit(2) }};
 }
 
 fn main() {
@@ -70,7 +68,7 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let home = env::var_os("HOME")
         .filter(|h| !h.is_empty())
-        .map_or_else(|| die("HOME unset"), PathBuf::from);
+        .map_or_else(|| die!("HOME unset"), PathBuf::from);
     let uid = Command::new("id")
         .arg("-u")
         .output()
@@ -81,14 +79,11 @@ fn main() {
             // Not `--global`: it lists only the active version, so the rollback target would be invisible.
             .args(["ls", "--json"])
             .output()
-            .unwrap_or_else(|e| die(format!("mise: {e}")));
+            .unwrap_or_else(|e| die!("mise: {e}"));
         if !ls.status.success() {
-            die(format!(
-                "mise: {}",
-                String::from_utf8_lossy(&ls.stderr).trim()
-            ));
+            die!("mise: {}", String::from_utf8_lossy(&ls.stderr).trim());
         }
-        serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die(format!("mise: {e}")))
+        serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die!("mise: {e}"))
     };
     let launchctl = |a: &[&str]| {
         Command::new("launchctl")
@@ -98,20 +93,20 @@ fn main() {
     };
     let agent = format!("gui/{uid}/{LABEL}");
     let plist = home.join(format!("Library/LaunchAgents/{LABEL}.plist"));
+    let pl = plist.display();
     let shims = env::var_os("MISE_DATA_DIR")
         .map(PathBuf::from)
         .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
         .unwrap_or_else(|| home.join(".local/share/mise"))
         .join("shims");
-    let a: Vec<&str> = args.iter().map(String::as_str).collect();
-    let (tool, mode) = match a[..] {
+    let (tool, mode) = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["setup"] => {
             let dir = env::split_paths(&env::var_os("PATH").unwrap_or_default())
                 .find(|d| {
                     fs::metadata(d.join("mise"))
                         .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
                 })
-                .unwrap_or_else(|| die("hotswap setup: no mise on PATH"));
+                .unwrap_or_else(|| die!("hotswap setup: no mise on PATH"));
             let esc = |p: &PathBuf| {
                 let p = p.display().to_string().replace('&', "&amp;");
                 p.replace('<', "&lt;").replace('>', "&gt;")
@@ -154,23 +149,19 @@ fn main() {
             }
             fs::create_dir_all(home.join("Library/LaunchAgents"))
                 .and_then(|()| fs::write(&plist, xml))
-                .unwrap_or_else(|e| die(format!("hotswap setup: {}: {e}", plist.display())));
+                .unwrap_or_else(|e| die!("hotswap setup: {pl}: {e}"));
             launchctl(&["bootout", &agent]);
-            let p = plist.display();
-            if !launchctl(&["bootstrap", &format!("gui/{uid}"), &p.to_string()]) {
-                println!("hotswap setup: launchctl bootstrap gui/{uid} {p} failed");
+            if !launchctl(&["bootstrap", &format!("gui/{uid}"), &pl.to_string()]) {
+                println!("hotswap setup: launchctl bootstrap gui/{uid} {pl} failed");
                 exit(1)
             }
-            println!("hotswap setup: {p} written; {LABEL} loaded, every 900s");
+            println!("hotswap setup: {pl} written; {LABEL} loaded, every 900s");
             return;
         }
         ["setup", "--remove"] => {
             let out = ["not loaded", "booted out"][usize::from(launchctl(&["bootout", &agent]))];
             let rm = ["absent", "removed"][usize::from(fs::remove_file(&plist).is_ok())];
-            println!(
-                "hotswap setup --remove: {LABEL} {out}; {} {rm}",
-                plist.display()
-            );
+            println!("hotswap setup --remove: {LABEL} {out}; {pl} {rm}");
             return;
         }
         ["tick"] => {
@@ -179,16 +170,14 @@ fn main() {
             // versions for the swap and its steps
             let path = env::var_os("PATH").unwrap_or_default();
             let path = env::join_paths(iter::once(shims).chain(env::split_paths(&path)))
-                .unwrap_or_else(|e| die(format!("hotswap tick: {e}")));
+                .unwrap_or_else(|e| die!("hotswap tick: {e}"));
             let keys: Vec<String> = ls()
                 .into_iter()
                 // those name a verb, not a tool: a `tick` child would tick again, without bound
-                .filter(|(k, v)| {
-                    k.strip_prefix(GIGANTIC)
-                        .is_some_and(|t| !["setup", "tick"].contains(&t))
-                        && v.iter().any(|i| i.active)
+                .filter_map(|(k, v)| {
+                    let t = k.strip_prefix(GIGANTIC)?;
+                    (!["setup", "tick"].contains(&t) && v.iter().any(|i| i.active)).then_some(k)
                 })
-                .map(|(k, _)| k)
                 .collect();
             if keys.is_empty() {
                 println!("hotswap tick: no gigantic tools");
@@ -217,7 +206,7 @@ fn main() {
         }
         [t] if !t.starts_with('-') => (t, ""),
         [t, m @ ("--back" | "--check")] if !t.starts_with('-') => (t, m),
-        _ => die(
+        _ => die!(
             "usage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick",
         ),
     };
@@ -225,19 +214,18 @@ fn main() {
         .into_iter()
         .find(|(k, v)| k.rsplit([':', '/']).next() == Some(tool) && v.iter().any(|i| i.active))
     else {
-        die(format!("{tool}: no active mise install"))
+        die!("{tool}: no active mise install")
     };
     let [cur] = installs.iter().filter(|i| i.active).collect::<Vec<_>>()[..] else {
-        die(format!("{tool}: several active versions"))
+        die!("{tool}: several active versions")
     };
     // A version's own manifest; None when mise holds no installed entry for it.
     let manifest = |v: &str| -> Option<Manifest> {
         let i = installs.iter().find(|i| i.version == v && i.installed)?;
         let s = fs::read_to_string(i.install_path.join("hotswap.toml")).unwrap_or_default();
-        Some(toml::from_str(&s).unwrap_or_else(|e| die(format!("{tool}: hotswap.toml: {e}"))))
+        Some(toml::from_str(&s).unwrap_or_else(|e| die!("{tool}: hotswap.toml: {e}")))
     };
-    let m = manifest(&cur.version)
-        .unwrap_or_else(|| die(format!("{tool} {}: not installed", cur.version)));
+    let m = manifest(&cur.version).unwrap_or_else(|| die!("{tool} {}: not installed", cur.version));
     let dir = home.join(".local/state/hotswap");
     let path = dir.join(format!("{tool}.json"));
     // Held until exit; the kernel drops it if hotswap dies.
@@ -245,14 +233,12 @@ fn main() {
     let _lock = (mode != "--check").then(|| {
         let f = fs::create_dir_all(&dir)
             .and_then(|()| File::create(&lock))
-            .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", lock.display())));
+            .unwrap_or_else(|e| die!("{tool}: {}: {e}", lock.display()));
         f.try_lock()
-            .unwrap_or_else(|_| die(format!("{tool}: another hotswap is running")));
+            .unwrap_or_else(|_| die!("{tool}: another hotswap is running"));
         f
     });
-    let old: Option<Record> = fs::read(&path)
-        .ok()
-        .and_then(|b| serde_json::from_slice(&b).ok());
+    let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
     // Settled on this version, green or red: only a new version or `--back` moves it.
     if let Some(r) = old
         .as_ref()
@@ -337,7 +323,7 @@ fn main() {
         let steps = steps(m);
         let mut r = Record::default();
         (r.previous, r.version) = (previous, version);
-        for (i, argv) in steps.iter().enumerate() {
+        r.failed = steps.iter().enumerate().find_map(|(i, argv)| {
             let (code, output) = run(m, argv);
             let probe = argv.join(" ");
             if i + m.smoke.len() >= steps.len() {
@@ -347,11 +333,8 @@ fn main() {
                     probe: probe.clone(),
                 });
             }
-            if code != 0 {
-                r.failed = Some(probe);
-                break;
-            }
-        }
+            (code != 0).then_some(probe)
+        });
         r
     };
     // No deadline: mise may be downloading.
@@ -374,14 +357,14 @@ fn main() {
             .and_then(|()| File::open(&tmp)?.sync_all())
             .and_then(|()| fs::rename(&tmp, &path))
             .and_then(|()| File::open(&dir)?.sync_all())
-            .unwrap_or_else(|e| die(format!("{tool}: {}: {e}", path.display())));
+            .unwrap_or_else(|e| die!("{tool}: {}: {e}", path.display()));
     };
     let (prev, before, green) = old.map_or((None, None, false), |r| {
         (Some(r.version), r.previous, r.ok || r.held)
     });
     let (mut rec, line) = if mode == "--back" {
-        let p = before.unwrap_or_else(|| die(format!("{tool}: no previous version")));
-        let t = manifest(&p).unwrap_or_else(|| die(format!("{tool} {p}: not installed")));
+        let p = before.unwrap_or_else(|| die!("{tool}: no previous version"));
+        let t = manifest(&p).unwrap_or_else(|| die!("{tool} {p}: not installed"));
         if !mise_use(&p) {
             println!("{tool}: mise use {key}@{p} failed");
             exit(1)
