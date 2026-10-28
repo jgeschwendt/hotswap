@@ -118,19 +118,37 @@
 <section class="docs-section" id="install" data-component="install">
   <header>
     <h2 class="h2">Install and upgrade</h2>
-    <p class="docs-note">mise does all of it; hotswap adds nothing here.</p>
+    <p class="docs-note">mise does the package work, and hotswap is the only program that speaks
+      mise: everything above it — bifrost's Components tab, each tool's own
+      <code class="code">upgrade</code> — speaks tool names and these verbs.</p>
   </header>
   <div class="table-wrap">
     <table data-table>
       <thead><tr><th>command</th><th>what it does</th></tr></thead>
       <tbody>
-        <tr><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt;</td><td>install with publisher verification, signer continuity (<code class="code">packslip/pins.toml</code> in mise's state dir) and artifact digest checks</td></tr>
-        <tr><td class="table-mono">mise upgrade</td><td>move to the newest eligible version</td></tr>
-        <tr><td class="table-mono">mise use -g &lt;tool&gt;@&lt;previous&gt;</td><td>instant rollback — versions sit side by side until mise prunes the upgraded-from one
-          after <code class="code">upgrade.prune_after</code> (24 h default), so a later
+        <tr><td class="table-mono">hotswap install &lt;tool&gt;</td><td><code class="code">mise use -g packslip:jgeschwendt/&lt;tool&gt;</code> — publisher verification, signer continuity
+          (<code class="code">packslip/pins.toml</code> in mise's state dir) and artifact digest
+          checks — then the swap with no drain (nothing runs yet) and no rollback (a record an
+          earlier remove left is ignored); refused, exit 1, over an active install</td></tr>
+        <tr><td class="table-mono">hotswap upgrade &lt;tool&gt;</td><td><code class="code">mise upgrade --bump &lt;mise key&gt;</code>, then exactly
+          <code class="code">hotswap &lt;tool&gt;</code>; nothing new reads
+          <code class="code">&lt;tool&gt; &lt;v&gt;: up to date</code>, exit 0</td></tr>
+        <tr><td class="table-mono">hotswap remove &lt;tool&gt;</td><td>under the tool's lock: <code class="code">&lt;tool&gt; setup --remove</code>,
+          <code class="code">mise unuse -g &lt;mise key&gt;</code>, then the record deleted — kept
+          when the unuse failed, so the tool stays settled and no tick re-runs its setup; a failed
+          step is printed with mise's reason and stops nothing, exit 1 if any failed. hotswap may remove itself: its
+          own <code class="code">setup --remove</code> boots its agent out</td></tr>
+        <tr><td class="table-mono">hotswap ls [&lt;tool&gt;…]</td><td>the inventory, one JSON array on stdout — every installed gigantic tool, or the names
+          given in order, installed or not; per tool <code class="code">record</code> (the state
+          record or null), <code class="code">release</code> (<code class="code">mise latest</code>,
+          one per tool in parallel, mise's chatter dropped), <code class="code">reason</code> when
+          release is null, <code class="code">tool</code>, <code class="code">version</code> (the
+          active install in <code class="code">mise ls --json</code>)</td></tr>
+        <tr><td class="table-mono">hotswap &lt;tool&gt; --back</td><td>instant rollback through <code class="code">mise use -g &lt;mise key&gt;@&lt;previous&gt;</code> —
+          versions sit side by side until mise prunes the upgraded-from one after
+          <code class="code">upgrade.prune_after</code> (24 h default), so a later
           <code class="code">--back</code> reaches it only inside that window; the tick's own
           rollback runs in the same tick, unaffected</td></tr>
-        <tr><td class="table-mono">mise ls --json</td><td>the inventory</td></tr>
       </tbody>
     </table>
   </div>
@@ -143,7 +161,9 @@
       (<code class="code">StartInterval</code>) on each host and not at load
       (<code class="code">RunAtLoad</code> false: a load-time tick would race the swap that ran
       setup): <code class="code">hotswap tick</code> runs <code class="code">mise upgrade</code> for
-      the gigantic tools, then <code class="code">hotswap &lt;tool&gt;</code> for each in its own
+      the gigantic tools — plain, never <code class="code">--bump</code>, so a rollback's exact pin
+      holds and the tick never loops back onto a red version; moving that pin is the owner's
+      explicit <code class="code">hotswap upgrade</code> — then <code class="code">hotswap &lt;tool&gt;</code> for each in its own
       process group, exiting 1 on a failed upgrade or any red swap. The plist runs mise's shim
       <code class="code">&lt;mise data dir&gt;/shims/hotswap tick</code> with the shims first on
       <code class="code">PATH</code>; a shim re-resolves the global version on every exec, so the
@@ -169,8 +189,14 @@
   <pre class="snippet">hotswap &lt;tool&gt;           <span class="snippet-note"># drain, swap, smoke, settle or roll back</span>
 hotswap &lt;tool&gt; --check   <span class="snippet-note"># report what would happen; touch nothing</span>
 hotswap &lt;tool&gt; --back    <span class="snippet-note"># a deliberate rollback to the previous version</span>
+hotswap ls [&lt;tool&gt;…]      <span class="snippet-note"># the inventory as one JSON array: record, release, version per tool</span>
+hotswap install &lt;tool&gt;   <span class="snippet-note"># mise use -g, then the swap: no drain, no rollback</span>
+hotswap upgrade &lt;tool&gt;   <span class="snippet-note"># mise upgrade --bump, then hotswap &lt;tool&gt;</span>
+hotswap remove &lt;tool&gt;    <span class="snippet-note"># setup --remove, mise unuse -g, the record dropped</span>
 hotswap setup [--remove]  <span class="snippet-note"># install (or boot out) its own agent, idempotently</span>
 hotswap tick              <span class="snippet-note"># what the agent runs through its shim: mise upgrade, then a swap per tool; exit 1 on either red</span></pre>
+  <p class="docs-note">Verbs match before a tool name, and a mise key named like a verb is never
+    swapped or listed.</p>
   <ol class="steps">
     <li><strong>Drain</strong> — ask the tool to finish or hand over what it holds, by the tool's
       own contract: grove's server drain ladder; a sandman shift keeps the binary it started on
@@ -218,8 +244,9 @@ hotswap tick              <span class="snippet-note"># what the agent runs throu
   <header>
     <h2 class="h2"><code class="code">&lt;tool&gt; setup</code></h2>
     <p class="docs-note">What every tool owns: one idempotent verb for its install duties. hotswap
-      calls it after a swap; a fresh host calls it once after <code class="code">mise install</code>.
-      The duties live with the tool, never in hotswap.</p>
+      calls it after every swap, <code class="code">hotswap install</code> included, and
+      <code class="code">hotswap remove</code> calls its <code class="code">--remove</code>. The
+      duties live with the tool, never in hotswap.</p>
   </header>
   <ul class="stack claims" role="list">
     <li><strong>launchd</strong> — render its templates (carrying <code class="code">{{HOME}}</code>,
@@ -233,6 +260,11 @@ hotswap tick              <span class="snippet-note"># what the agent runs throu
     <li><strong><code class="code">--remove</code></strong> — the inverse, for bifrost's uninstall toggle: boot the
       agents out, remove the routine docs it installed and its MCP registrations, leave the
       tool's data alone, print what it undid.</li>
+    <li><strong><code class="code">&lt;tool&gt; upgrade</code></strong> — a few lines that exec
+      <code class="code">hotswap upgrade &lt;tool&gt;</code> through <code class="code">PATH</code>;
+      with no hotswap found it prints <code class="code">install hotswap: mise use -g
+      packslip:jgeschwendt/hotswap &amp;&amp; hotswap setup</code> and exits 1. Every tool gains it
+      with its first packslip release; none has one yet.</li>
   </ul>
   <h3 class="h3" id="setup-manifest"><code class="code">hotswap.toml</code></h3>
   <p class="docs-note">Shipped at the root of the release archive (the install path). Every field
@@ -249,24 +281,31 @@ timeout = 120   <span class="snippet-note"># seconds per step; expiry kills the 
 <!-- ※ bifrost -->
 <section class="docs-section" id="bifrost" data-component="bifrost">
   <header>
-    <h2 class="h2">bifrost on mise</h2>
-    <p class="docs-note">The Components tab is a front end for mise and hotswap; bifrost itself is
-      a component too.</p>
+    <h2 class="h2">bifrost on hotswap</h2>
+    <p class="docs-note">The Components tab is a front end for hotswap and calls hotswap only;
+      bifrost itself is a component too.</p>
   </header>
   <div class="table-wrap">
     <table data-table>
       <thead><tr><th>action</th><th>runs</th></tr></thead>
       <tbody>
-        <tr><td>components</td><td>the gigantic tools</td></tr>
-        <tr><td>install</td><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt; · &lt;tool&gt; setup</td></tr>
-        <tr><td>upgrade</td><td class="table-mono">mise upgrade &lt;tool&gt; · hotswap &lt;tool&gt;</td></tr>
+        <tr><td>components</td><td class="table-mono">hotswap ls &lt;tools&gt;</td></tr>
+        <tr><td>install</td><td class="table-mono">hotswap install &lt;tool&gt;</td></tr>
+        <tr><td>upgrade</td><td class="table-mono">hotswap upgrade &lt;tool&gt;</td></tr>
         <tr><td>roll back</td><td class="table-mono">hotswap &lt;tool&gt; --back</td></tr>
-        <tr><td>tab shown</td><td>presence in <code class="code">mise ls --json</code> — routines tab, sandman report page, voice panel</td></tr>
+        <tr><td>uninstall</td><td class="table-mono">hotswap remove &lt;tool&gt;</td></tr>
+        <tr><td>tab shown</td><td>a non-null <code class="code">version</code> in <code class="code">hotswap ls</code> — routines tab, sandman report page, voice panel</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="docs-note plan-note-after">bifrost's app and runtime layers move onto the same path;
-    <code class="code">selfupdate.rs</code> retires.</p>
+  <p class="docs-note plan-note-after"><strong>The one bootstrap exception:</strong> hotswap cannot
+    install hotswap, so bifrost installs and reads hotswap itself through mise —
+    <code class="code">mise use -g packslip:jgeschwendt/hotswap</code> then
+    <code class="code">hotswap setup</code>, and <code class="code">mise latest</code> /
+    <code class="code">mise ls</code> for the hotswap row. bifrost's app and runtime layers move
+    onto the same path; <code class="code">selfupdate.rs</code> retires.</p>
+  <p class="docs-note plan-note-after"><strong>owner, 2026-10-28: mise internal</strong> — hotswap
+    is the only caller of mise.</p>
 </section>
 
 <!-- ※ non-goals -->
@@ -297,20 +336,25 @@ timeout = 120   <span class="snippet-note"># seconds per step; expiry kills the 
       <code class="code">sandman setup</code> verb folding <code class="code">plist</code> and
       the shift-test and routine installs. The interim trunk-build routine
       <code class="code">sandman-install</code> retires when
-      <code class="code">mise use -g packslip:jgeschwendt/sandman</code> is live on this Mac.</li>
+      <code class="code">hotswap install sandman</code> is live on this Mac.</li>
     <li><strong>hotswap</strong> — first release is the owner's.</li>
     <li><strong>routines and stele</strong> adopt the release workflow and
       <code class="code">setup</code>.</li>
     <li><strong>grove adopts</strong> — its <code class="code">update</code> module and
       <code class="code">install.sh</code> retire.</li>
-    <li><strong>bifrost</strong> — Components tab on mise and hotswap; app and runtime layers and
+    <li><strong><code class="code">&lt;tool&gt; upgrade</code></strong> — each tool ships it with
+      its first packslip release.</li>
+    <li><strong>bifrost</strong> — Components tab on hotswap's verbs, mise only for the hotswap row;
+      app and runtime layers and
       <code class="code">selfupdate.rs</code> retire; the <code class="code">*-releases</code> mirror
       retires.</li>
   </ol>
   <p class="docs-note plan-note-after"><strong>Before the agent ticks unattended:</strong> the
     tick leaves the exact pin a rollback's <code class="code">mise use -g</code> sets in place on
     purpose, so <code class="code">mise upgrade</code> never loops back onto the failed version
-    and stays off later releases too; re-pinning is a person's call.</p>
+    and stays off later releases too; re-pinning is a person's call, made with
+    <code class="code">hotswap upgrade</code> (its <code class="code">--bump</code> moves the
+    pin).</p>
   <p class="docs-note plan-note-after"><strong>Owner-only:</strong> creating the repo, the first
     release of each tool, and the gigantic.dev proxy entry for
     <code class="code">/hotswap/</code>.</p>

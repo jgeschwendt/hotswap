@@ -7,8 +7,10 @@ use std::{
 
 // One host walked through every branch: `mise`, `launchctl` and the tool's commands are one sh stub
 // that logs its argv; `<name>.code` makes that stub exit non-zero, and `mise use` clears those
-// unless `sticky` exists, and a one-shot `crash` SIGKILLs its caller. `mise ls` answers only from
-// `/`; the temp dir's `&<>` must be escaped in the plist.
+// unless `sticky` exists, `quiet` silences its stderr, and a one-shot `crash` SIGKILLs its caller. `mise ls` answers only from
+// `/`; any other mise call moves `next.json` over `ls.json`; `mise latest <key>`, unlogged since
+// they run in parallel, sources `latest/<key>` or fails silently. The temp dir's `&<>` must be
+// escaped in the plist.
 #[test]
 fn hotswap() {
     let d = tempfile::Builder::new().prefix("hot&<>").tempdir().unwrap();
@@ -17,6 +19,18 @@ fn hotswap() {
     for (name, body) in [
         ("bad/hotswap.toml", "agents = 1"),
         ("gone/hotswap.toml", r#"smoke = [["absent"]]"#),
+        (
+            "latest/packslip:jgeschwendt/lost",
+            "echo no release found >&2; echo run with --verbose >&2",
+        ),
+        (
+            "latest/packslip:jgeschwendt/t",
+            "echo ' WARN  mise: noise'; echo 3; echo 'Version: 9'; exit 0",
+        ),
+        (
+            "latest/packslip:jgeschwendt/t1",
+            "echo ' WARN  x' >&2; exit 0",
+        ),
         (
             "slow/hotswap.toml",
             "smoke = [[\"sh\", \"-c\", \"sleep 3 & echo up\"], [\"sh\", \"-c\", \"(sleep 2; touch ~/m) & sleep 3\"]]\ntimeout = 1",
@@ -41,7 +55,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     // the exact log match
     for name in ["bin/chk", "bin/launchctl", "bin/mise", "bin/t", "t/hotswap"] {
         let stub = format!(
-            "#!/bin/sh\nn=${{0##*/}}; echo \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && cd '{0}' && exec cat ls.json\n[ \"$n $1\" = 'mise use' ] && rm '{0}/crash' 2>/dev/null && kill -9 $PPID\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
+            "#!/bin/sh\nn=${{0##*/}}\n[ \"$n $1\" = 'mise latest' ] && {{ [ -e \"{0}/latest/$2\" ] && . \"{0}/latest/$2\"; exit 1; }}\necho \"$n $*\" >> '{0}/log'\n[ \"$n $1\" = 'mise ls' ] && [ \"$(pwd -P)\" = / ] && cd '{0}' && exec cat ls.json\n[ \"$n\" = mise ] && mv '{0}/next.json' '{0}/ls.json' 2>/dev/null\n[ \"$n $1\" = 'mise use' ] && rm '{0}/crash' 2>/dev/null && kill -9 $PPID\n[ \"$n $1\" = 'mise use' ] && [ ! -e '{0}/sticky' ] && rm -f '{0}'/*.code\necho \"$1 out\"; [ -e '{0}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{0}/$n.code\" 2>/dev/null || echo 0)\n",
             p.display()
         );
         fs::write(p.join(name), stub).unwrap();
@@ -57,7 +71,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
             e("t", v == "2", true, "2"),
             e("t", v == "3", true, "3")
         ]);
-        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/t": t, "packslip:jgeschwendt/setup": one("t", v != "1", true), "packslip:jgeschwendt/t1": one("t1", v != "1", true), "packslip:jgeschwendt/tick": one("t", v != "1", true), "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
+        let all = json!({"aqua:x/bad": one("bad", true, true), "aqua:x/t": one("t", false, true), "bare": one("bare", true, true), "cargo:gone": one("gone", true, true), "idle": one("t", false, true), "lost": one("t", true, false), "packslip:jgeschwendt/install": one("t", v != "1", true), "packslip:jgeschwendt/ls": one("t", v != "1", true), "packslip:jgeschwendt/n": one("t", v == "n", true), "packslip:jgeschwendt/remove": one("t", v != "1", true), "packslip:jgeschwendt/t": t, "packslip:jgeschwendt/setup": one("t", v != "1", true), "packslip:jgeschwendt/t1": one("t1", v != "1", true), "packslip:jgeschwendt/tick": one("t", v != "1", true), "packslip:jgeschwendt/upgrade": one("t", v != "1", true), "slow": one("slow", true, true), "two": [e("t", true, true, "1"), e("t", true, true, "2")]});
         fs::write(p.join("ls.json"), all.to_string()).unwrap();
     };
     let uid = String::from_utf8(Command::new("id").arg("-u").output().unwrap().stdout).unwrap();
@@ -106,8 +120,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
     };
     let code = |name: &str| fs::write(p.join(name), "3").unwrap();
-    let usage =
-        "2\nusage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick\n";
+    let usage = "2\nusage: hotswap <tool> [--check | --back] | hotswap ls [<tool>…] | hotswap install <tool> | hotswap upgrade <tool> | hotswap remove <tool> | hotswap setup [--remove] | hotswap tick\n";
     let ls_log = "mise ls --json\n";
     // a run that stops after the `mise ls` lookup, printing `want`
     let ls_only = |args: &[&str], want: &str| assert_eq!(run(args), format!("{want}\n{ls_log}"));
@@ -122,6 +135,8 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     assert_eq!(run(&[]), usage);
     assert_eq!(run(&["--back"]), usage);
     assert_eq!(run(&["t", "--x"]), usage);
+    assert_eq!(run(&["install"]), usage);
+    assert_eq!(run(&["upgrade", "--back"]), usage);
     assert_eq!(go(&["t"], &[("HOME", "")]), "2\nHOME unset\n");
 
     // setup: shims from MISE_DATA_DIR, XDG_DATA_HOME, then HOME; unchanged; a failing launchctl
@@ -279,7 +294,7 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
     // mise use refuses: the failed version stays current
     put("1");
     code("mise.code");
-    let refused = "mise use packslip:jgeschwendt/t@1 failed";
+    let refused = "mise use packslip:jgeschwendt/t@1 failed: use err";
     assert_eq!(run(&["t"]), red(refused, &use_log("1")));
     assert_eq!(state(), r#""3" "1" false "chk x""#);
     assert_eq!(
@@ -354,6 +369,110 @@ smoke = [["t", "version"], ["chk", "x"]]"#,
         go(&["tick"], &[("MISE_DATA_DIR", "a:b")]),
         "2\nhotswap tick: path segment contains separator `:`\n"
     );
+
+    // install: refused over an active version; a failed mise use; then a swap with no drain and no
+    // rollback, red, then green over that red record at the same version
+    ls_only(&["install", "t"], "1\nt: already installed");
+    code("mise.code");
+    let new = "mise use -g packslip:jgeschwendt/n\n";
+    assert_eq!(
+        run(&["install", "n"]),
+        format!("1\nn: mise use packslip:jgeschwendt/n failed: use err\n{ls_log}{new}")
+    );
+    fs::remove_file(p.join("mise.code")).unwrap();
+    // `a` is what mise lists once the next mise call ran, `b` until then
+    let next = |a: &str, b: &str| {
+        ls(a);
+        fs::rename(p.join("ls.json"), p.join("next.json")).unwrap();
+        ls(b);
+    };
+    let installed = format!("{ls_log}{new}{ls_log}{}", &swap_log[8..]);
+    next("n", "3");
+    assert_eq!(
+        run(&["install", "n"]),
+        format!("1\nn: chk x failed; no previous version\n{installed}")
+    );
+    fs::remove_file(p.join("sticky")).unwrap();
+    next("n", "3");
+    assert_eq!(
+        run(&["install", "n"]),
+        format!("0\nn 1: green, 2 smoke probes\n{installed}")
+    );
+
+    // upgrade: mise upgrade --bump, then exactly `hotswap <tool>`
+    ls_only(&["upgrade", "t"], "1\nt: not installed");
+    ls_only(&["remove", "t"], "1\nt: not installed");
+    ls("3");
+    code("mise.code");
+    let bump = "mise upgrade --bump packslip:jgeschwendt/t\n";
+    assert_eq!(
+        run(&["upgrade", "t"]),
+        format!("1\nt: mise upgrade failed: upgrade err\n{ls_log}{bump}")
+    );
+    // mise said nothing: no reason, no empty one
+    code("quiet");
+    assert_eq!(
+        run(&["upgrade", "t"]),
+        format!("1\nt: mise upgrade failed\n{ls_log}{bump}")
+    );
+    fs::remove_file(p.join("quiet")).unwrap();
+    fs::remove_file(p.join("mise.code")).unwrap();
+    put("3");
+    assert_eq!(
+        run(&["upgrade", "t"]),
+        format!("0\nt 3: up to date\n{ls_log}{bump}{ls_log}")
+    );
+    put("2");
+    next("3", "2");
+    assert_eq!(
+        run(&["upgrade", "t"]),
+        format!("0\nt 3: green, 2 smoke probes\n{ls_log}{bump}{ls_log}{swap_log}")
+    );
+    assert_eq!(state(), r#""3" "2" true null"#);
+
+    // ls: one JSON array — every gigantic tool but the verbs, or the names given in order;
+    // mise latest's chatter dropped, its three outcomes, an unknown name
+    put("3");
+    fs::remove_file(state_dir.join("t1.json")).unwrap();
+    let t = r#"{"record":{"at":0,"ok":true,"previous":"0","smoke":[],"version":"3"},"release":"3","tool":"t","version":"3"}"#;
+    let t1 = r#"{"reason":"no packslip release yet","record":null,"release":null,"tool":"t1","version":"1"}"#;
+    ls_only(&["ls"], &format!("0\n[{t},{t1}]"));
+    let lost = r#"{"reason":"no release found","record":null,"release":null,"tool":"lost","version":null}"#;
+    let nope = r#"{"reason":"mise latest failed","record":null,"release":null,"tool":"nope","version":null}"#;
+    ls_only(
+        &["ls", "lost", "nope", "t1"],
+        &format!("0\n[{lost},{nope},{t1}]"),
+    );
+    ls_only(&["ls", "two"], "2\ntwo: several active versions");
+
+    // remove: a failing setup --remove still unuses and drops the record; a failing unuse reds it
+    // and keeps the record; a version mise lost has nothing to undo
+    let unuse = "t setup --remove\nmise unuse -g packslip:jgeschwendt/t\n";
+    code("t.code");
+    assert_eq!(
+        run(&["remove", "t"]),
+        format!("1\nt: t setup --remove failed\n{ls_log}{unuse}")
+    );
+    assert!(!state_dir.join("t.json").exists());
+    fs::remove_file(p.join("t.code")).unwrap();
+    code("mise.code");
+    put("3");
+    assert_eq!(
+        run(&["remove", "t"]),
+        format!("1\nt: mise unuse packslip:jgeschwendt/t failed: unuse err\n{ls_log}{unuse}")
+    );
+    assert!(state_dir.join("t.json").exists());
+    fs::remove_file(p.join("mise.code")).unwrap();
+    assert_eq!(
+        run(&["remove", "t"]),
+        format!("0\nt: removed\n{ls_log}{unuse}")
+    );
+    assert!(!state_dir.join("t.json").exists());
+    assert_eq!(
+        run(&["remove", "lost"]),
+        format!("0\nlost: removed\n{ls_log}mise unuse -g lost\n")
+    );
+
     ls("1");
     ls_only(&["tick"], "0\nhotswap tick: no gigantic tools");
 }
