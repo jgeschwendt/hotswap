@@ -1,5 +1,6 @@
 //! hotswap — the swap moment for a mise-installed tool: drain, swap, smoke, then settle or roll back.
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
     env,
@@ -57,9 +58,14 @@ struct Record {
 const GIGANTIC: &str = "packslip:jgeschwendt/";
 /// hotswap's own launchd agent.
 const LABEL: &str = "dev.gigantic.hotswap";
+/// hotswap's own verbs: a mise key named like one is never a tool.
+const VERBS: [&str; 6] = ["install", "ls", "remove", "setup", "tick", "upgrade"];
 
 macro_rules! die {
     ($($a:tt)*) => {{ eprintln!($($a)*); exit(2) }};
+}
+macro_rules! fail {
+    ($($a:tt)*) => {{ println!($($a)*); exit(1) }};
 }
 
 fn main() {
@@ -85,6 +91,43 @@ fn main() {
         }
         serde_json::from_slice(&ls.stdout).unwrap_or_else(|e| die!("mise: {e}"))
     };
+    // the last line that is not mise's own chatter
+    let last = |b: &[u8]| {
+        let noise = [" WARN ", "Version:", "--verbose"];
+        (String::from_utf8_lossy(b).lines())
+            .rfind(|l| !noise.iter().any(|n| l.contains(n)))
+            .map(str::to_owned)
+    };
+    // No deadline: mise may be downloading.
+    let mise_out = |a: &[&str]| Command::new("mise").args(a).output().ok();
+    // Err is mise's reason as a `: why` suffix, empty when it printed none.
+    let mise = |a: &[&str]| match mise_out(a) {
+        Some(o) if o.status.success() => Ok(()),
+        o => Err(o
+            .and_then(|o| last(&o.stderr))
+            .map_or_else(String::new, |w| format!(": {w}"))),
+    };
+    // `k` names `t` on any backend and holds an active version.
+    let is = |t: &str, k: &str, v: &[Install]| {
+        k.rsplit([':', '/']).next() == Some(t) && v.iter().any(|i| i.active)
+    };
+    // The active version and whether mise holds it installed.
+    let one = |t: &str, v: &[Install]| {
+        let [i] = v.iter().filter(|i| i.active).collect::<Vec<_>>()[..] else {
+            die!("{t}: several active versions")
+        };
+        (i.version.clone(), i.installed)
+    };
+    // the gigantic tools with an active version; a verb's name is never one: a `tick` child would
+    // tick again, without bound
+    let gigantic = |all: &BTreeMap<String, Vec<Install>>| -> Vec<String> {
+        all.iter()
+            .filter_map(|(k, v)| {
+                let t = k.strip_prefix(GIGANTIC)?;
+                (!VERBS.contains(&t) && v.iter().any(|i| i.active)).then(|| t.to_owned())
+            })
+            .collect()
+    };
     let launchctl = |a: &[&str]| {
         Command::new("launchctl")
             .args(a)
@@ -99,6 +142,8 @@ fn main() {
         .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
         .unwrap_or_else(|| home.join(".local/share/mise"))
         .join("shims");
+    let dir = home.join(".local/state/hotswap");
+    let plain = |t: &str| !t.starts_with('-') && !VERBS.contains(&t);
     let (tool, mode) = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["setup"] => {
             let dir = env::split_paths(&env::var_os("PATH").unwrap_or_default())
@@ -152,8 +197,7 @@ fn main() {
                 .unwrap_or_else(|e| die!("hotswap setup: {pl}: {e}"));
             launchctl(&["bootout", &agent]);
             if !launchctl(&["bootstrap", &format!("gui/{uid}"), &pl.to_string()]) {
-                println!("hotswap setup: launchctl bootstrap gui/{uid} {pl} failed");
-                exit(1)
+                fail!("hotswap setup: launchctl bootstrap gui/{uid} {pl} failed");
             }
             println!("hotswap setup: {pl} written; {LABEL} loaded, every 900s");
             return;
@@ -171,22 +215,15 @@ fn main() {
             let path = env::var_os("PATH").unwrap_or_default();
             let path = env::join_paths(iter::once(shims).chain(env::split_paths(&path)))
                 .unwrap_or_else(|e| die!("hotswap tick: {e}"));
-            let keys: Vec<String> = ls()
-                .into_iter()
-                // those name a verb, not a tool: a `tick` child would tick again, without bound
-                .filter_map(|(k, v)| {
-                    let t = k.strip_prefix(GIGANTIC)?;
-                    (!["setup", "tick"].contains(&t) && v.iter().any(|i| i.active)).then_some(k)
-                })
-                .collect();
-            if keys.is_empty() {
+            let tools = gigantic(&ls());
+            if tools.is_empty() {
                 println!("hotswap tick: no gigantic tools");
                 return;
             }
             // no deadline: mise may be downloading; red or not, versions may already differ
             let up = Command::new("mise")
                 .arg("upgrade")
-                .args(&keys)
+                .args(tools.iter().map(|t| format!("{GIGANTIC}{t}")))
                 .status()
                 .is_ok_and(|s| s.success());
             if !up {
@@ -194,9 +231,9 @@ fn main() {
             }
             // its own group, since a `hotswap setup` bootout of this job kills the job's group and
             // would take the in-flight swap with it
-            let red = keys.iter().filter(|k| {
+            let red = tools.iter().filter(|t| {
                 !Command::new("hotswap")
-                    .arg(&k[GIGANTIC.len()..])
+                    .arg(t)
                     .env("PATH", &path)
                     .process_group(0)
                     .status()
@@ -204,77 +241,90 @@ fn main() {
             });
             exit(i32::from(red.count() > 0 || !up))
         }
-        [t] if !t.starts_with('-') => (t, ""),
-        [t, m @ ("--back" | "--check")] if !t.starts_with('-') => (t, m),
+        ["ls", ref names @ ..] => {
+            let all = ls();
+            let names = if names.is_empty() {
+                gigantic(&all)
+            } else {
+                names.iter().map(|&t| t.into()).collect()
+            };
+            // one `mise latest` per tool, all at once; no deadline, mise has its own
+            let rows: Vec<Value> = thread::scope(|s| {
+                let latest: Vec<_> = (names.iter())
+                    .map(|t| s.spawn(move || mise_out(&["latest", &format!("{GIGANTIC}{t}")])))
+                    .collect();
+                (names.iter().zip(latest))
+                    .map(|(t, h)| {
+                        let (release, why) = match h.join().ok().flatten() {
+                            Some(o) if o.status.success() => {
+                                (last(&o.stdout), "no packslip release yet".into())
+                            }
+                            o => {
+                                let why = o.and_then(|o| last(&o.stderr));
+                                (None, why.unwrap_or_else(|| "mise latest failed".into()))
+                            }
+                        };
+                        let version = (all.iter().find(|(k, v)| is(t, k, v)))
+                            .map(|(_, v)| one(t, v))
+                            .and_then(|(v, installed)| installed.then_some(v));
+                        let record = fs::read(dir.join(format!("{t}.json"))).ok();
+                        let record = record.and_then(|b| serde_json::from_slice::<Value>(&b).ok());
+                        let mut row = json!({"record": record, "release": release, "tool": t, "version": version});
+                        if release.is_none() {
+                            row["reason"] = why.into();
+                        }
+                        row
+                    })
+                    .collect()
+            });
+            println!("{}", Value::from(rows));
+            return;
+        }
+        [t] if plain(t) => (t, ""),
+        [t, m @ ("--back" | "--check")] | [m @ ("install" | "remove" | "upgrade"), t]
+            if plain(t) =>
+        {
+            (t, m)
+        }
         _ => die!(
-            "usage: hotswap <tool> [--check | --back] | hotswap setup [--remove] | hotswap tick",
+            "usage: hotswap <tool> [--check | --back] | hotswap ls [<tool>…] | hotswap install <tool> | hotswap upgrade <tool> | hotswap remove <tool> | hotswap setup [--remove] | hotswap tick",
         ),
     };
-    let Some((key, installs)) = ls()
-        .into_iter()
-        .find(|(k, v)| k.rsplit([':', '/']).next() == Some(tool) && v.iter().any(|i| i.active))
-    else {
+    let find = || ls().into_iter().find(|(k, v)| is(tool, k, v));
+    let found = find();
+    // install and upgrade move mise first, then swap what it moved
+    let moved = match (mode, &found) {
+        ("install", Some(_)) => fail!("{tool}: already installed"),
+        ("remove" | "upgrade", None) => fail!("{tool}: not installed"),
+        ("install", None) => mise(&["use", "-g", &format!("{GIGANTIC}{tool}")])
+            .map_err(|w| format!("mise use {GIGANTIC}{tool} failed{w}")),
+        // --bump moves the pin a rollback set; the tick's plain upgrade never does
+        ("upgrade", Some((k, _))) => {
+            mise(&["upgrade", "--bump", k]).map_err(|w| format!("mise upgrade failed{w}"))
+        }
+        _ => Ok(()),
+    };
+    if let Err(e) = moved {
+        fail!("{tool}: {e}");
+    }
+    let Some((key, installs)) = (if matches!(mode, "install" | "upgrade") {
+        find()
+    } else {
+        found
+    }) else {
         die!("{tool}: no active mise install")
     };
-    let [cur] = installs.iter().filter(|i| i.active).collect::<Vec<_>>()[..] else {
-        die!("{tool}: several active versions")
-    };
+    let (cur, _) = one(tool, &installs);
     // A version's own manifest; None when mise holds no installed entry for it.
     let manifest = |v: &str| -> Option<Manifest> {
         let i = installs.iter().find(|i| i.version == v && i.installed)?;
         let s = fs::read_to_string(i.install_path.join("hotswap.toml")).unwrap_or_default();
         Some(toml::from_str(&s).unwrap_or_else(|e| die!("{tool}: hotswap.toml: {e}")))
     };
-    let m = manifest(&cur.version).unwrap_or_else(|| die!("{tool} {}: not installed", cur.version));
-    let dir = home.join(".local/state/hotswap");
+    // a remove still unuses a version mise lost, with nothing to undo
+    let m = (manifest(&cur).or_else(|| (mode == "remove").then(Manifest::default)))
+        .unwrap_or_else(|| die!("{tool} {cur}: not installed"));
     let path = dir.join(format!("{tool}.json"));
-    // Held until exit; the kernel drops it if hotswap dies.
-    let lock = dir.join(format!("{tool}.lock"));
-    let _lock = (mode != "--check").then(|| {
-        let f = fs::create_dir_all(&dir)
-            .and_then(|()| File::create(&lock))
-            .unwrap_or_else(|e| die!("{tool}: {}: {e}", lock.display()));
-        f.try_lock()
-            .unwrap_or_else(|_| die!("{tool}: another hotswap is running"));
-        f
-    });
-    let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
-    // Settled on this version, green or red: only a new version or `--back` moves it.
-    if let Some(r) = old
-        .as_ref()
-        .filter(|r| mode != "--back" && r.version == cur.version)
-    {
-        let state = if r.ok {
-            "up to date".into()
-        } else {
-            format!("red at {}", r.failed.as_deref().unwrap_or_default())
-        };
-        println!("{tool} {}: {state}", r.version);
-        exit(i32::from(!r.ok && mode.is_empty()))
-    }
-    // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke probes.
-    // never hotswap's own agent: the next tick finds a new hotswap through its shim, and a kick kills it
-    let steps = |m: &Manifest| -> Vec<Vec<String>> {
-        let kick = m.agents.iter().filter(|a| *a != LABEL).map(|a| {
-            ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
-                .map(String::from)
-                .into()
-        });
-        (!m.setup.is_empty())
-            .then(|| m.setup.clone())
-            .into_iter()
-            .chain(kick)
-            .chain(m.smoke.clone())
-            .collect()
-    };
-    if mode == "--check" {
-        let was = old.map_or("none".into(), |r| r.version);
-        println!("{tool}: {was} → {}", cur.version);
-        for argv in m.drain.iter().chain(&steps(&m)) {
-            println!("  {}", argv.join(" "));
-        }
-        return;
-    }
     // One pipe for stdout and stderr, drained on a thread while the deadline is polled.
     let run = |m: &Manifest, argv: &[String]| {
         let secs = m.timeout.unwrap_or(120);
@@ -315,6 +365,76 @@ fn main() {
         })()
         .unwrap_or_else(|e: io::Error| (-1, e.to_string()))
     };
+    // Held until exit; the kernel drops it if hotswap dies.
+    let lock = dir.join(format!("{tool}.lock"));
+    let _lock = (mode != "--check").then(|| {
+        let f = fs::create_dir_all(&dir)
+            .and_then(|()| File::create(&lock))
+            .unwrap_or_else(|e| die!("{tool}: {}: {e}", lock.display()));
+        f.try_lock()
+            .unwrap_or_else(|_| die!("{tool}: another hotswap is running"));
+        f
+    });
+    if mode == "remove" {
+        // a failed `setup --remove` stops nothing; a failed unuse keeps the record, so the tool
+        // stays settled and no tick re-runs its setup
+        let undo = (!m.setup.is_empty()).then(|| [&m.setup[..], &["--remove".into()]].concat());
+        let mut failed: Vec<String> = (undo.filter(|a| run(&m, a).0 != 0))
+            .map(|a| format!("{} failed", a.join(" ")))
+            .into_iter()
+            .collect();
+        match mise(&["unuse", "-g", &key]) {
+            Ok(()) => drop(fs::remove_file(&path)),
+            Err(w) => failed.push(format!("mise unuse {key} failed{w}")),
+        }
+        for f in &failed {
+            println!("{tool}: {f}");
+        }
+        if failed.is_empty() {
+            println!("{tool}: removed");
+        }
+        exit(i32::from(!failed.is_empty()))
+    }
+    // an install starts over: a record left by an earlier remove is no previous version
+    let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default())
+        .ok()
+        .filter(|_| mode != "install");
+    // Settled on this version, green or red: only a new version or `--back` moves it.
+    if let Some(r) = old
+        .as_ref()
+        .filter(|r| mode != "--back" && r.version == cur)
+    {
+        let state = if r.ok {
+            "up to date".into()
+        } else {
+            format!("red at {}", r.failed.as_deref().unwrap_or_default())
+        };
+        println!("{tool} {}: {state}", r.version);
+        exit(i32::from(!r.ok && mode != "--check"))
+    }
+    // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke probes.
+    // never hotswap's own agent: the next tick finds a new hotswap through its shim, and a kick kills it
+    let steps = |m: &Manifest| -> Vec<Vec<String>> {
+        let kick = m.agents.iter().filter(|a| *a != LABEL).map(|a| {
+            ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
+                .map(String::from)
+                .into()
+        });
+        (!m.setup.is_empty())
+            .then(|| m.setup.clone())
+            .into_iter()
+            .chain(kick)
+            .chain(m.smoke.clone())
+            .collect()
+    };
+    if mode == "--check" {
+        let was = old.map_or("none".into(), |r| r.version);
+        println!("{tool}: {was} → {cur}");
+        for argv in m.drain.iter().chain(&steps(&m)) {
+            println!("  {}", argv.join(" "));
+        }
+        return;
+    }
     // Runs a manifest's steps into a record; stops at the first failure.
     let swap = |m: &Manifest, version: String, previous: Option<String>| {
         let steps = steps(m);
@@ -333,13 +453,6 @@ fn main() {
             (code != 0).then_some(probe)
         });
         r
-    };
-    // No deadline: mise may be downloading.
-    let mise_use = |v: &str| {
-        Command::new("mise")
-            .args(["use", "-g", &format!("{key}@{v}")])
-            .output()
-            .is_ok_and(|o| o.status.success())
     };
     // Stamped, synced and swapped in whole: even a power loss leaves the old record or the new one.
     let save = |r: &mut Record| {
@@ -362,11 +475,10 @@ fn main() {
     let (mut rec, line) = if mode == "--back" {
         let p = before.unwrap_or_else(|| die!("{tool}: no previous version"));
         let t = manifest(&p).unwrap_or_else(|| die!("{tool} {p}: not installed"));
-        if !mise_use(&p) {
-            println!("{tool}: mise use {key}@{p} failed");
-            exit(1)
+        if let Err(w) = mise(&["use", "-g", &format!("{key}@{p}")]) {
+            fail!("{tool}: mise use {key}@{p} failed{w}");
         }
-        let rec = swap(&t, p, Some(cur.version.clone()));
+        let rec = swap(&t, p, Some(cur.clone()));
         let line = rec
             .failed
             .as_ref()
@@ -374,13 +486,13 @@ fn main() {
         (rec, line)
     } else {
         let target = prev.as_deref().and_then(manifest);
-        for argv in &m.drain {
+        // an install has nothing running to drain
+        for argv in m.drain.iter().filter(|_| mode != "install") {
             if run(&m, argv).0 != 0 {
-                println!("{tool}: {} refused; nothing swapped", argv.join(" "));
-                exit(1)
+                fail!("{tool}: {} refused; nothing swapped", argv.join(" "));
             }
         }
-        let mut rec = swap(&m, cur.version.clone(), prev.clone());
+        let mut rec = swap(&m, cur, prev.clone());
         // recorded before any rollback: a crash past its mise use then reads red, never the
         // previous version's green on its new exact pin
         save(&mut rec);
@@ -389,8 +501,10 @@ fn main() {
                 (None, _) => "no previous version".into(),
                 (Some(p), _) if !green => format!("{p} is red; no rollback"),
                 (Some(p), None) => format!("{p} not installed"),
-                (Some(p), Some(_)) if !mise_use(&p) => format!("mise use {key}@{p} failed"),
                 (Some(p), Some(t)) => {
+                    if let Err(w) = mise(&["use", "-g", &format!("{key}@{p}")]) {
+                        return format!("{tool}: {f} failed; mise use {key}@{p} failed{w}");
+                    }
                     let back = swap(&t, p, before);
                     rec.smoke.extend(back.smoke);
                     (rec.version, rec.previous, rec.held) =
