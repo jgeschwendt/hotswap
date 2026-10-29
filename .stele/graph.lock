@@ -3,7 +3,12 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 281,
+      "line": 278,
+      "node": "docs"
+    },
+    "contract": {
+      "file": "docs/index.html",
+      "line": 240,
       "node": "docs"
     },
     "install": {
@@ -13,27 +18,22 @@
     },
     "mechanism": {
       "file": "docs/index.html",
-      "line": 180,
+      "line": 165,
       "node": "docs"
     },
     "next": {
       "file": "docs/index.html",
-      "line": 327,
+      "line": 332,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 311,
+      "line": 316,
       "node": "docs"
     },
     "release": {
       "file": "docs/index.html",
       "line": 83,
-      "node": "docs"
-    },
-    "setup": {
-      "file": "docs/index.html",
-      "line": 242,
       "node": "docs"
     },
     "why": {
@@ -67,7 +67,7 @@
       },
       "id": "/",
       "kind": "system",
-      "purpose": "hotswap — mise's only caller for the gigantic tools — the swap (drain, setup, kickstart, smoke, settle or roll back), `ls`/`install`/`upgrade`/`remove`, its own agent's `setup`/`tick`; no daemon."
+      "purpose": "hotswap — the crate inside each gigantic tool — `upgrade` (bump, drain, setup, kickstart, smoke, settle or roll back, red hold), `forget`, `agent_plist` (its 900 s upgrade agent); no binary or daemon."
     },
     "docs": {
       "budget": null,
@@ -84,7 +84,7 @@
       },
       "id": "docs",
       "kind": "container",
-      "purpose": "the design — `index.html` (GitHub Pages) is the only design source — release contract, mechanism, `<tool> setup`, hotswap.toml, next shifts; `page.css` holds only what is hotswap's"
+      "purpose": "the design — `index.html` (GitHub Pages) is the only design source — release, install, mechanism, the tool contract, bifrost, next; `page.css` holds only what is hotswap's"
     },
     "src": {
       "budget": null,
@@ -101,7 +101,7 @@
       },
       "id": "src",
       "kind": "container",
-      "purpose": "crate source — `main.rs` is the whole binary — arg parse, `mise ls` lookup, hotswap.toml, drain → setup → kickstart → smoke, rollback, the record, `ls`/`install`/`upgrade`/`remove`, `setup`, `tick`"
+      "purpose": "crate source — `lib.rs` is the whole crate — `Manifest`; `upgrade` — mise lookup, red hold, bump, lock, drain → setup → kickstart → smoke, rollback, the record; `forget`; `agent_plist`"
     },
     "tests": {
       "budget": null,
@@ -118,7 +118,7 @@
       },
       "id": "tests",
       "kind": "container",
-      "purpose": "end-to-end suite — `hotswap.rs` walks one temp $HOME through every branch with sh stubs for mise, launchctl and the tool's commands, asserting exit code, output and stub argv"
+      "purpose": "end-to-end suite — `hotswap.rs` re-execs itself as tool `t` linking the crate, walking one temp $HOME through every branch with sh stubs for mise, launchctl and the steps"
     }
   },
   "version": 2
