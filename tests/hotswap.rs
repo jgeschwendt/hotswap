@@ -13,13 +13,13 @@ fn main() {
     let mut args = env::args();
     let tool = args.next().unwrap_or_default();
     let m = json!({
-        "gone": {"smoke": [["absent"]]},
+        "gone": {"bin": "g", "smoke": [["absent"]]},
         "slow": {"smoke": [["sh", "-c", "sleep 3 & echo up"], ["sh", "-c", "(sleep 2; touch ~/m) & sleep 3"]], "timeout": 1},
         "t": {"agents": ["dev.gigantic.t.upgrade", "dev.gigantic.t"], "drain": [["t", "drain"]], "setup": ["t", "setup"], "smoke": [["t", "version"], ["chk", "x"]]},
     });
     match tool.as_str() {
         "forget" => hotswap::forget("t"),
-        "plist" => print!("{}", hotswap::agent_plist("t")),
+        "plist" => print!("{}", hotswap::agent_plist("t", "tb")),
         t if !t.contains('/') => {
             let m = serde_json::from_value(m.get(t).cloned().unwrap_or(json!({}))).unwrap();
             exit(hotswap::upgrade(t, &m, &args.collect::<Vec<_>>()))
@@ -138,6 +138,7 @@ fn suite() {
     let usage = "2\nusage: t upgrade [--check | --back | --retry]\n";
     assert_eq!(run(&["--x"]), usage);
     assert_eq!(run(&["--back", "--check"]), usage);
+    assert_eq!(go("gone", &["--x"], &[]), usage.replace(" t ", " g "));
     assert_eq!(go("t", &[], &[("HOME", "")]), "2\nHOME unset\n");
 
     // the plist: shims from MISE_DATA_DIR, XDG_DATA_HOME, then HOME; mise's dir from PATH, else
@@ -153,7 +154,7 @@ fn suite() {
   <key>Label</key><string>dev.gigantic.t.upgrade</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{shims}/t</string>
+    <string>{shims}/tb</string>
     <string>upgrade</string>
   </array>
   <key>EnvironmentVariables</key>

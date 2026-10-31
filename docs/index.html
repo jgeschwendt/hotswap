@@ -146,12 +146,12 @@
       <code class="code">minimum_release_age = "0s"</code>; mise's default holds
       <code class="code">latest</code> 24 h.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
-      whose plist <code class="code">hotswap::agent_plist(tool)</code> renders and
+      whose plist <code class="code">hotswap::agent_plist(tool, bin)</code> renders and
       <code class="code">&lt;tool&gt; setup</code> bootstraps: every 900 s
       (<code class="code">StartInterval</code>), not at load (<code class="code">RunAtLoad</code>
       false: a load-time upgrade would race the swap that ran setup), as a background process
       logging to <code class="code">~/Library/Logs/&lt;label&gt;.log</code>. It runs mise's shim
-      <code class="code">&lt;mise data dir&gt;/shims/&lt;tool&gt; upgrade</code> with the shims first
+      <code class="code">&lt;mise data dir&gt;/shims/&lt;bin&gt; upgrade</code> with the shims first
       on <code class="code">PATH</code>; a shim re-resolves the global version on every exec, so the
       agent follows whichever version is active and survives its own swap, which never kickstarts
       it. A shim puts the running install's bin dir ahead of the shims, so
@@ -259,6 +259,19 @@
       <code class="code">hotswap::upgrade(tool, &amp;manifest, &amp;args)</code>, its return the
       exit code: 0 green or settled, 1 red, 2 unable to try. Every tool gains it with its first
       packslip release; none has one yet.</li>
+    <li><strong>three names, one identity</strong> — the tool name is the mise key's last segment
+      (<code class="code">packslip:jgeschwendt/routines</code>), the label stem
+      (<code class="code">dev.gigantic.routines.*</code>) and the record
+      (<code class="code">~/.local/state/hotswap/routines.json</code>). The executable may differ:
+      routines ships <code class="code">routine</code>, so its manifest sets
+      <code class="code">bin: "routine".into()</code>, which names the usage line, and its setup
+      renders <code class="code">agent_plist("routines", "routine")</code>; empty, the tool name
+      stands in.</li>
+    <li><strong>the shims dir</strong> — <code class="code">hotswap::shims()</code>, mise's
+      <code class="code">MISE_DATA_DIR</code>, else <code class="code">XDG_DATA_HOME/mise</code>,
+      else <code class="code">~/.local/share/mise</code>, then <code class="code">shims</code>: the
+      lookup the plist uses, for a setup that links <code class="code">~/.local/bin/&lt;bin&gt;</code>
+      to <code class="code">&lt;shims&gt;/&lt;bin&gt;</code>, as sandman's does.</li>
   </ul>
   <h3 class="h3" id="contract-manifest">The manifest, in code</h3>
   <p class="docs-note">Every field may be empty; <code class="code">..Default::default()</code>
