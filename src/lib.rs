@@ -26,6 +26,8 @@ struct Install {
 pub struct Manifest {
     /// launchd labels kickstarted once setup ran; the tool's own upgrade agent never is
     pub agents: Vec<String>,
+    /// the executable, when it is not named for the tool; empty means the tool's name
+    pub bin: String,
     /// run before the swap; a non-zero exit refuses it
     pub drain: Vec<Vec<String>>,
     /// the tool's own `setup` argv, run after every swap
@@ -61,22 +63,26 @@ struct Record {
     version: String,
 }
 
-/// `$HOME` (empty when unset) and mise's shims dir.
-fn dirs() -> (PathBuf, PathBuf) {
-    let home = PathBuf::from(env::var_os("HOME").unwrap_or_default());
-    let shims = env::var_os("MISE_DATA_DIR")
-        .map(PathBuf::from)
-        .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
-        .unwrap_or_else(|| home.join(".local/share/mise"))
-        .join("shims");
-    (home, shims)
+/// `$HOME`, empty when unset.
+fn home() -> PathBuf {
+    PathBuf::from(env::var_os("HOME").unwrap_or_default())
 }
 
-/// The launchd plist of the tool's own upgrade agent, `dev.gigantic.<tool>.upgrade`: `<tool> upgrade`
+/// mise's shims dir: under `MISE_DATA_DIR`, else `XDG_DATA_HOME/mise`, else `~/.local/share/mise`.
+#[must_use]
+pub fn shims() -> PathBuf {
+    env::var_os("MISE_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
+        .unwrap_or_else(|| home().join(".local/share/mise"))
+        .join("shims")
+}
+
+/// The launchd plist of the tool's own upgrade agent, `dev.gigantic.<tool>.upgrade`: `<bin> upgrade`
 /// through mise's shim every 900 s.
 #[must_use]
-pub fn agent_plist(tool: &str) -> String {
-    let (home, shims) = dirs();
+pub fn agent_plist(tool: &str, bin: &str) -> String {
+    let (home, shims) = (home(), shims());
     let esc = |p: &PathBuf| {
         let p = p.display().to_string().replace('&', "&amp;");
         p.replace('<', "&lt;").replace('>', "&gt;")
@@ -100,7 +106,7 @@ pub fn agent_plist(tool: &str) -> String {
   <key>Label</key><string>{label}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{shims}/{tool}</string>
+    <string>{shims}/{bin}</string>
     <string>upgrade</string>
   </array>
   <key>EnvironmentVariables</key>
@@ -124,7 +130,7 @@ pub fn agent_plist(tool: &str) -> String {
 
 /// Drops the tool's record and lock, so a reinstall starts clean; `<tool> setup --remove` calls it.
 pub fn forget(tool: &str) {
-    let dir = dirs().0.join(".local/state/hotswap");
+    let dir = home().join(".local/state/hotswap");
     for e in ["json", "lock"] {
         fs::remove_file(dir.join(format!("{tool}.{e}"))).ok();
     }
@@ -140,18 +146,17 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             [] => "",
             [m @ ("--back" | "--check" | "--retry")] => m,
             _ => {
-                return Err(format!(
-                    "usage: {tool} upgrade [--check | --back | --retry]"
-                ));
+                let bin = Some(&*m.bin).filter(|b| !b.is_empty()).unwrap_or(tool);
+                return Err(format!("usage: {bin} upgrade [--check | --back | --retry]"));
             }
         };
-        let (home, shims) = dirs();
+        let home = home();
         if home.as_os_str().is_empty() {
             return Err("HOME unset".into());
         }
         // a shim puts the running install's bin dir ahead of the shims; shims lead again, so each
         // step resolves the version mise just made active
-        let mut path = shims.into_os_string();
+        let mut path = shims().into_os_string();
         path.push(":");
         path.push(env::var_os("PATH").unwrap_or_default());
         // from `/`: a mise.toml in the caller's cwd would shadow the global pins

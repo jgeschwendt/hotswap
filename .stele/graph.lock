@@ -3,7 +3,7 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 278,
+      "line": 291,
       "node": "docs"
     },
     "contract": {
@@ -23,12 +23,12 @@
     },
     "next": {
       "file": "docs/index.html",
-      "line": 332,
+      "line": 345,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 316,
+      "line": 329,
       "node": "docs"
     },
     "release": {
@@ -67,7 +67,7 @@
       },
       "id": "/",
       "kind": "system",
-      "purpose": "hotswap — the crate inside each gigantic tool — `upgrade` (bump, drain, setup, kickstart, smoke, settle or roll back, red hold), `forget`, `agent_plist` (its 900 s upgrade agent); no binary or daemon."
+      "purpose": "hotswap — the crate in each gigantic tool — `upgrade` (bump, drain, setup, kickstart, smoke, settle or roll back, red hold), `forget`, `agent_plist` (its upgrade agent), `shims`; no binary or daemon."
     },
     "docs": {
       "budget": null,
@@ -101,7 +101,7 @@
       },
       "id": "src",
       "kind": "container",
-      "purpose": "crate source — `lib.rs` is the whole crate — `Manifest`; `upgrade` — mise lookup, red hold, bump, lock, drain → setup → kickstart → smoke, rollback, the record; `forget`; `agent_plist`"
+      "purpose": "crate source — `lib.rs` is the whole crate — `Manifest`; `upgrade` — mise lookup, red hold, bump, lock, drain → setup → kickstart → smoke, rollback, the record; `forget`; `agent_plist`; `shims`"
     },
     "tests": {
       "budget": null,
