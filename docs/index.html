@@ -142,9 +142,13 @@
     </table>
   </div>
   <ul class="stack claims" role="list">
-    <li><strong>no release-age hold</strong> — our tools set the tool option
-      <code class="code">minimum_release_age = "0s"</code>; mise's default holds
-      <code class="code">latest</code> 24 h.</li>
+    <li><strong>no release-age hold</strong> — mise's default holds <code class="code">latest</code>
+      24 h, which would hide every release from the upgrade tick and from bifrost's rows; the
+      machine's global mise settings list each tool's full backend ID in
+      <code class="code">minimum_release_age_excludes</code> (<code class="code">packslip:jgeschwendt/sandman</code>
+      and so on: a path glob such as <code class="code">packslip:jgeschwendt/*</code> matches nothing,
+      verified 2026-10-31). The list rides the profile repo's
+      <code class="code">~/.config/mise/config.toml</code>, so a new machine carries it.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
       whose plist <code class="code">hotswap::agent_plist(tool, bin)</code> renders and
       <code class="code">&lt;tool&gt; setup</code> bootstraps: every 900 s
