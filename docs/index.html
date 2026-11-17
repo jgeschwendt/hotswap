@@ -264,7 +264,11 @@
       it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
       (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). When
       all five fail it leaves <code class="code">unloaded</code> in the pid file, and the next
-      <code class="code">ensure</code> — any later setup — loads the agent. grove's and routines'
+      <code class="code">ensure</code> — any later setup — loads the agent from whatever plist is
+      on disk (the shim's, after a rolled-back migration); a mark found with the agent loaded (a
+      logout failed the five, the login loaded it) or its label disabled by the user is cleared
+      with no bootstrap, and a refused load is one line on stderr and in the agent's log, never a
+      failed setup, the mark kept for the next try. grove's and routines'
       daemons do not call <code class="code">ensure</code> at start, so until a setup runs the
       upgrade agent stays unloaded (its log says why), at most until the next login. A
       run launchd starts between the waiter's last look and its bootout is killed at its start,

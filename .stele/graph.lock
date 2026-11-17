@@ -3,12 +3,12 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 453,
+      "line": 457,
       "node": "docs"
     },
     "contract": {
       "file": "docs/index.html",
-      "line": 390,
+      "line": 394,
       "node": "docs"
     },
     "install": {
@@ -18,17 +18,17 @@
     },
     "mechanism": {
       "file": "docs/index.html",
-      "line": 325,
+      "line": 329,
       "node": "docs"
     },
     "next": {
       "file": "docs/index.html",
-      "line": 495,
+      "line": 499,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 481,
+      "line": 485,
       "node": "docs"
     },
     "release": {

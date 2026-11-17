@@ -1119,19 +1119,32 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(outcome, format!("{reloaded}{failed}"));
     assert_eq!(fs::read_to_string(&reload_pid).unwrap(), "unloaded\n");
     let boot = "launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist\n";
+    let disabled = "launchctl print-disabled gui/$UID\n";
+    // a refused load is one line, here and in the agent's log; setup goes on, the mark stays
+    let refused = "hotswap: gui/$UID/dev.gigantic.m.upgrade not loaded from ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist: bootstrap err\n";
     assert_eq!(
         from_layout(&["setup"]),
-        format!(
-            "2\nm: launchctl bootstrap ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist: bootstrap err\n{print}\n{boot}"
-        )
+        format!("0\n~/.local/bin/m\n{refused}{print}\n{disabled}{boot}")
     );
+    assert_eq!(waited(3).1, format!("{reloaded}{failed}{refused}"));
+    assert_eq!(fs::read_to_string(&reload_pid).unwrap(), "unloaded\n");
+    // a label the user disabled stays unloaded: no bootstrap, the mark cleared
+    put_file(
+        "launchctl.print-disabled.out",
+        "\"dev.gigantic.m.upgrade\" => disabled\n",
+    );
+    assert_eq!(from_layout(&["setup"]), format!("0\n{mm}{disabled}"));
+    assert!(!reload_pid.exists());
+    fs::remove_file(p.join("launchctl.print-disabled.out")).unwrap();
+    // loaded by nobody, not disabled: the next setup loads it
+    fs::write(&reload_pid, "unloaded\n").unwrap();
     fs::remove_file(p.join("launchctl.bootstrap.code")).unwrap();
-    assert_eq!(
-        from_layout(&["setup"]),
-        format!(
-            "0\n{mm}launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist\n"
-        )
-    );
+    assert_eq!(from_layout(&["setup"]), format!("0\n{mm}{disabled}{boot}"));
+    assert!(!reload_pid.exists());
+    // a mark left by a logout, the agent loaded again at login: cleared, no bootstrap
+    loaded(&link, "not running");
+    fs::write(&reload_pid, "unloaded\n").unwrap();
+    assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
     assert!(!reload_pid.exists());
     fs::write(&agent_log, "").unwrap();
     // the next tick, the agent on the link: no mise, nothing reloads
