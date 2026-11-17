@@ -6,7 +6,7 @@ use std::{
     env,
     error::Error,
     fs::{self, File},
-    io::{self, Read, pipe},
+    io::{self, Read, Write, pipe},
     os::unix::{
         fs::{PermissionsExt, symlink},
         process::{CommandExt, ExitStatusExt},
@@ -441,11 +441,31 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
         let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
         let mark = fs::read_to_string(&pid).unwrap_or_default();
-        // the last waiter failed every bootstrap and left the agent unloaded: load it now
-        if mark.trim() == "unloaded" && said.is_empty() {
-            out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s]))
-                .map_err(|w| format!("launchctl bootstrap {plist_s}: {w}"))?;
-            fs::remove_file(&pid)?;
+        // the last waiter failed every bootstrap: load the agent, unless it is loaded again (a
+        // login, the mark stale: a logout fails every bootstrap) or the user disabled it, whose
+        // choice stands; a failed load is one log line and the mark stays for the next try
+        if mark.trim() == "unloaded" {
+            let off = || {
+                out(Command::new("launchctl").args(["print-disabled", &gui]))
+                    .is_ok_and(|d| d.contains(&format!("\"{label}\" => disabled")))
+            };
+            let healed = !said.is_empty()
+                || off()
+                || out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s])).map_or_else(
+                    |w| {
+                        let note = format!("hotswap: {target} not loaded from {plist_s}: {w}");
+                        eprintln!("{note}");
+                        fs::create_dir_all(home.join("Library/Logs")).ok();
+                        (File::options().create(true).append(true))
+                            .open(home.join(format!("Library/Logs/{label}.log")))
+                            .and_then(|mut f| writeln!(f, "{note}"))
+                            .is_err()
+                    },
+                    |_| true,
+                );
+            if healed {
+                fs::remove_file(&pid)?;
+            }
         }
         // one waiter at a time: a setup step inside the same run finds the first one alive; a pid
         // reused after a logout killed the waiter is not one, since its command names no plist
