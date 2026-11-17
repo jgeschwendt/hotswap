@@ -3,37 +3,37 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 280,
+      "line": 402,
       "node": "docs"
     },
     "contract": {
       "file": "docs/index.html",
-      "line": 221,
+      "line": 338,
       "node": "docs"
     },
     "install": {
       "file": "docs/index.html",
-      "line": 108,
+      "line": 109,
       "node": "docs"
     },
     "mechanism": {
       "file": "docs/index.html",
-      "line": 162,
+      "line": 277,
       "node": "docs"
     },
     "next": {
       "file": "docs/index.html",
-      "line": 328,
+      "line": 444,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 312,
+      "line": 430,
       "node": "docs"
     },
     "release": {
       "file": "docs/index.html",
-      "line": 75,
+      "line": 74,
       "node": "docs"
     },
     "why": {
@@ -49,6 +49,7 @@
       "commands": {
         "check": "mise run check",
         "cover": "mise run cover",
+        "e2e": "cargo test -- --ignored",
         "lint": "cargo clippy --all-targets -- -D warnings && cargo fmt --check",
         "test": "cargo test"
       },
@@ -67,7 +68,7 @@
       },
       "id": "/",
       "kind": "system",
-      "purpose": "hotswap — the crate in each gigantic tool — `upgrade` (bump, drain, setup, kickstart, smoke, settle or roll back, red hold), `forget`, `agent_plist` (its upgrade agent), `shims`; no binary or daemon."
+      "purpose": "hotswap — the crate in each gigantic tool — `ensure`, `install`, `upgrade` on packslip and its own version dirs (drain, repoint, swap, smoke, settle or roll back), `forget`, `agent_plist`, `root`"
     },
     "docs": {
       "budget": null,
@@ -101,7 +102,7 @@
       },
       "id": "src",
       "kind": "container",
-      "purpose": "crate source — `lib.rs` is the whole crate — `Manifest`; `upgrade` — mise lookup, red hold, bump, lock, drain → setup → kickstart → smoke, rollback, the record; `forget`; `agent_plist`; `shims`"
+      "purpose": "crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise), `install`, `upgrade`, `forget`, `agent_plist`, `root`"
     },
     "tests": {
       "budget": null,
@@ -118,7 +119,7 @@
       },
       "id": "tests",
       "kind": "container",
-      "purpose": "end-to-end suite — `hotswap.rs` re-execs itself as tool `t` linking the crate, walking one temp $HOME through every branch with sh stubs for mise, launchctl and the steps"
+      "purpose": "end-to-end suite — `hotswap.rs` re-execs itself as tool `t`, walking a temp $HOME through every branch on sh stubs and a fake mise; `--ignored` runs real packslip and grove"
     }
   },
   "version": 2

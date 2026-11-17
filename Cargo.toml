@@ -1,5 +1,5 @@
 [package]
-description = "hotswap — the `upgrade` verb inside each gigantic tool: mise moves the version; hotswap drains, swaps, smokes, then settles or rolls back"
+description = "hotswap — the `upgrade` verb inside each gigantic tool: packslip verifies and unpacks each release into hotswap's version dirs; hotswap drains, swaps, smokes, then settles or rolls back"
 edition = "2024"
 # SPDX id, not `license-file`: crates.io and dependency scanners read `license`.
 license = "PolyForm-Noncommercial-1.0.0"
