@@ -424,6 +424,8 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
                 .is_none_or(|c| newer(v, c) && red.as_ref() != Some(v))
         });
         if let Some((key, v, rel)) = ran {
+            // every copy but the running one predates this crate: its setup needs mise's shim
+            let mut old = vec![];
             for d in fs::read_dir(&key)?.flatten() {
                 let n = d.file_name();
                 if d.file_type().is_ok_and(|t| t.is_dir())
@@ -434,75 +436,145 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
                     out(Command::new("cp").arg("-Rp").arg(d.path()).arg(&s))
                         .map_err(|w| format!("cp: {w}"))?;
                     place(&s, &rel, bin, &dir.join(&n))?;
+                    old.extend((n != *v.as_str()).then(|| format!("{}\n", n.to_string_lossy())));
                 }
             }
+            let (file, _) = premise(&home, tool);
+            fs::create_dir_all(home.join(".local/state/hotswap"))?;
+            let mut listed = fs::read_to_string(&file).unwrap_or_default();
+            listed.extend(old);
+            persist(&file, listed.as_bytes())?;
             relink(Path::new(&v), &dir.join("current"))?;
-            // a shell with mise's shims ahead of ~/.local/bin still runs mise's copy
-            let (label, ..) = agent(tool, &home);
-            let key = format!("packslip:{}", m.repo);
-            let moved =
-                format!("{tool}: moved off mise; run `mise unuse -g {key}` to drop mise's copy");
-            note(&home, &label, &moved);
+            mise_free(tool, m, &home);
         } else if cur.is_none() {
             let v = fetch(tool, m, "")?;
             relink(Path::new(&v), &dir.join("current"))?;
         }
         relink(&dir.join("current").join(bin), &link)?;
-        // the upgrade agent is hotswap's alone: its plist written here, loaded when not loaded
-        // (unless the user disabled it), reloaded through the waiter when loaded from a stale plist
-        let (label, plist, gui) = agent(tool, &home);
-        let (target, plist_s) = (format!("{gui}/{label}"), plist.display().to_string());
-        let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
-        let mark = fs::read_to_string(&pid).unwrap_or_default();
-        // one waiter at a time: a setup step inside the same run finds the first one alive, and no
-        // load races its bootout; a pid reused after a logout killed the waiter is not one, since
-        // its command names no plist
-        let waiting = out(Command::new("ps").args(["-ww", "-o", "command=", "-p", mark.trim()]))
-            .is_ok_and(|c| c.contains(&plist_s));
-        let text = agent_plist(tool, bin);
-        let fresh = fs::read_to_string(&plist).ok() != Some(text.clone());
-        if !waiting && fresh {
-            fs::create_dir_all(home.join("Library/LaunchAgents"))?;
-            persist(&plist, text.as_bytes())?;
-        }
-        let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
-        let off = || {
-            out(Command::new("launchctl").args(["print-disabled", &gui]))
-                .is_ok_and(|d| d.contains(&format!("\"{label}\" => disabled")))
-        };
-        if waiting {
-            // the waiter owns the agent until it is done: a load here would race its bootout
-        } else if said.is_empty() && !off() {
-            if let Err(w) = out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s])) {
-                note(
-                    &home,
-                    &label,
-                    &format!("hotswap: {target} not loaded from {plist_s}: {w}"),
-                );
-            }
-        } else if said.contains(&format!("path = {plist_s}"))
-            && (fresh || !said.contains(&format!("program = {}", link.display())))
-        {
-            // loaded from this plist, so never a scratch HOME's; launchd re-reads it only on a
-            // bootstrap
-            fs::create_dir_all(home.join("Library/Logs"))?;
-            fs::create_dir_all(home.join(".local/state/hotswap"))?;
-            let log = home.join(format!("Library/Logs/{label}.log"));
-            let log = File::options().create(true).append(true).open(log)?;
-            // its own group, writing only to the agent's log: it outlives the upgrade run it waits
-            // out and holds no step's pipe open
-            let waiter = (Command::new("/bin/sh").args(["-c", RELOAD, &target, &gui, &plist_s]))
-                .arg(&pid)
-                .process_group(0)
-                .stdin(Stdio::null())
-                .stdout(log.try_clone()?)
-                .stderr(log)
-                .spawn()?;
-            fs::write(&pid, waiter.id().to_string())?;
-        }
+        tend(tool, bin, &home, &link)?;
         Ok(link)
     })()
     .map_err(|e| format!("{tool}: {e}"))
+}
+
+/// The upgrade agent, hotswap's alone: its plist written, loaded when not loaded (unless the user
+/// disabled it), reloaded through the waiter when loaded from a stale plist; left alone when another
+/// plist holds the label, and never loaded for a HOME that is not this account's. A host with no
+/// launchctl (Linux) has no agent.
+fn tend(tool: &str, bin: &str, home: &Path, link: &Path) -> Result<(), Box<dyn Error>> {
+    if !on_path("launchctl") {
+        return Ok(());
+    }
+    let (label, plist, gui) = agent(tool, home);
+    let (target, plist_s) = (format!("{gui}/{label}"), plist.display().to_string());
+    let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
+    let mark = fs::read_to_string(&pid).unwrap_or_default();
+    // one waiter at a time: a setup step inside the same run finds the first one alive, and no
+    // load races its bootout; a pid reused after a logout killed the waiter is not one, since its
+    // command names no plist
+    let waiting = out(Command::new("ps").args(["-ww", "-o", "command=", "-p", mark.trim()]))
+        .is_ok_and(|c| c.contains(&plist_s));
+    let text = agent_plist(tool, bin);
+    let fresh = fs::read_to_string(&plist).ok() != Some(text.clone());
+    if !waiting && fresh {
+        fs::create_dir_all(home.join("Library/LaunchAgents"))?;
+        persist(&plist, text.as_bytes())?;
+    }
+    let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+    let elsewhere = (said.lines())
+        .find_map(|l| l.trim().strip_prefix("path = "))
+        .filter(|p| *p != plist_s);
+    let off = || {
+        out(Command::new("launchctl").args(["print-disabled", &gui]))
+            .is_ok_and(|d| d.contains(&format!("\"{label}\" => disabled")))
+    };
+    // a scratch HOME (a test, a sandbox) must never claim the label in the real domain
+    let theirs = || {
+        let ours = account(home);
+        if !ours {
+            eprintln!(
+                "hotswap: {label} not loaded: {} is not this account's home",
+                home.display()
+            );
+        }
+        !ours
+    };
+    if waiting {
+        // the waiter owns the agent until it is done: a load here would race its bootout
+    } else if let Some(path) = elsewhere {
+        eprintln!("{label} is loaded from {path}, not {plist_s}; left as it is");
+    } else if said.is_empty() && !off() && !theirs() {
+        if let Err(w) = out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s])) {
+            note(
+                home,
+                &label,
+                &format!("hotswap: {target} not loaded from {plist_s}: {w}"),
+            );
+        }
+    } else if said.contains(&format!("path = {plist_s}"))
+        && (fresh || !said.contains(&format!("program = {}", link.display())))
+        && !theirs()
+    {
+        // loaded from this plist; launchd re-reads it only on a bootstrap
+        fs::create_dir_all(home.join("Library/Logs"))?;
+        fs::create_dir_all(home.join(".local/state/hotswap"))?;
+        let log = home.join(format!("Library/Logs/{label}.log"));
+        let log = File::options().create(true).append(true).open(log)?;
+        // its own group, writing only to the agent's log: it outlives the upgrade run it waits
+        // out and holds no step's pipe open
+        let waiter = (Command::new("/bin/sh").args(["-c", RELOAD, &target, &gui, &plist_s]))
+            .arg(&pid)
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(log.try_clone()?)
+            .stderr(log)
+            .spawn()?;
+        fs::write(&pid, waiter.id().to_string())?;
+    }
+    Ok(())
+}
+
+/// Whether `n` is an executable file on PATH.
+fn on_path(n: &str) -> bool {
+    env::split_paths(&env::var_os("PATH").unwrap_or_default()).any(|d| {
+        fs::metadata(d.join(n)).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+    })
+}
+
+/// Whether `home` is this account's home as its passwd entry gives it (`~<user>`), or
+/// `HOTSWAP_TEST_HOME`, the suite's stand-in.
+fn account(home: &Path) -> bool {
+    (env::var_os("HOTSWAP_TEST_HOME").map(PathBuf::from))
+        .or_else(|| {
+            let o = out(Command::new("/bin/sh").args(["-c", "eval echo ~$(id -un)"]));
+            o.ok().map(|h| PathBuf::from(h.trim()))
+        })
+        .is_some_and(|h| h == home)
+}
+
+/// The layout's versions that predate this crate — mise's copies at a migration, but the running
+/// one — while still on disk, and the file under the record that lists them, `<tool>.mise`.
+fn premise(home: &Path, tool: &str) -> (PathBuf, Vec<String>) {
+    let file = home.join(format!(".local/state/hotswap/{tool}.mise"));
+    let listed = fs::read_to_string(&file).unwrap_or_default();
+    let on_disk = listed
+        .lines()
+        .filter(|v| root().join(tool).join(v).is_dir());
+    (file, on_disk.map(str::to_owned).collect())
+}
+
+/// Once no version on disk predates this crate, nothing needs mise's copy: says so, once, on
+/// stderr and in the agent's log, and drops the list.
+fn mise_free(tool: &str, m: &Manifest, home: &Path) {
+    let (file, old) = premise(home, tool);
+    if file.exists() && old.is_empty() {
+        let key = format!("packslip:{}", m.repo);
+        let line = format!(
+            "{tool}: no version here needs mise any more; run `mise unuse -g {key}` to drop mise's copy"
+        );
+        note(home, &format!("dev.gigantic.{tool}.upgrade"), &line);
+        fs::remove_file(file).ok();
+    }
 }
 
 /// A first install, for bifrost or a bare bootstrap: `ensure`, then the manifest's setup through
@@ -541,11 +613,14 @@ fn agent(tool: &str, home: &Path) -> (String, PathBuf, String) {
 /// One line on stderr and in the upgrade agent's log, for what happens unattended.
 fn note(home: &Path, label: &str, line: &str) {
     eprintln!("{line}");
-    fs::create_dir_all(home.join("Library/Logs")).ok();
-    (File::options().create(true).append(true))
-        .open(home.join(format!("Library/Logs/{label}.log")))
-        .and_then(|mut f| writeln!(f, "{line}"))
-        .ok();
+    // no launchctl (Linux), no agent, no agent log
+    on_path("launchctl").then(|| {
+        fs::create_dir_all(home.join("Library/Logs")).ok();
+        (File::options().create(true).append(true))
+            .open(home.join(format!("Library/Logs/{label}.log")))
+            .and_then(|mut f| writeln!(f, "{line}"))
+            .ok()
+    });
 }
 
 /// The launchd plist of the tool's own upgrade agent, `dev.gigantic.<tool>.upgrade`:
@@ -606,14 +681,16 @@ pub fn forget(tool: &str) -> Result<(), String> {
     let state = home.join(".local/state/hotswap");
     let _lock = lock(tool, &state)?;
     // the upgrade agent ensure loaded: booted out only when loaded from this HOME's plist
-    let (label, plist, gui) = agent(tool, &home);
-    let target = format!("{gui}/{label}");
-    let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
-    if said.contains(&format!("path = {}", plist.display())) {
-        out(Command::new("launchctl").args(["bootout", &target])).ok();
+    if on_path("launchctl") {
+        let (label, plist, gui) = agent(tool, &home);
+        let target = format!("{gui}/{label}");
+        let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+        if said.contains(&format!("path = {}", plist.display())) {
+            out(Command::new("launchctl").args(["bootout", &target])).ok();
+        }
+        fs::remove_file(&plist).ok();
     }
-    fs::remove_file(&plist).ok();
-    for e in ["json", "latest", "lock", "reload"] {
+    for e in ["json", "latest", "lock", "mise", "reload"] {
         fs::remove_file(state.join(format!("{tool}.{e}"))).ok();
     }
     for d in [root().join(tool), own(tool)] {
@@ -635,7 +712,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             [m @ ("--back" | "--check" | "--retry")] => m,
             _ => return Err(format!("usage: {bin} upgrade [--check | --back | --retry]")),
         };
-        let state = homed()?.join(".local/state/hotswap");
+        let home = homed()?;
+        let state = home.join(".local/state/hotswap");
         let dir = root().join(tool);
         let (uid, path, hint) = (
             uid(),
@@ -754,16 +832,17 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             return Ok(0);
         }
         // Repoints `current`, then runs the steps into a record; stops at the first failure.
-        // the one call left to mise: going back onto a version mise also holds, whose setup may be
-        // a pre-hotswap release's that relinks onto mise's shim, mise's active version goes back
-        // first, so the shim runs that version (best effort: a failure is a recorded step)
-        let held_by_mise = mise().join(format!("installs/packslip-{}", m.repo.replace('/', "-")));
+        // the one call left to mise: going back onto a version that predates this crate, whose
+        // setup relinks onto mise's shim, mise's active version goes back first, so the shim runs
+        // that version; a failure is a recorded step, and returned: the shim still runs the other
+        let old_crate = premise(&home, tool).1;
         let swap = |version: String, previous: Option<String>, back: bool| {
             let mut r = Record::default();
             (r.previous, r.version) = (previous, version);
             let to = relink(Path::new(&r.version), &dir.join("current"));
             r.failed = to.err().map(|e| format!("current → {}: {e}", r.version));
-            if back && r.failed.is_none() && held_by_mise.join(&r.version).is_dir() {
+            let mut stuck = None;
+            if back && r.failed.is_none() && old_crate.contains(&r.version) {
                 let pin = [
                     "mise",
                     "use",
@@ -773,6 +852,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                 let pin = pin.map(String::from);
                 let (code, output) = run(&pin);
                 if code != 0 {
+                    stuck = Some(format!("{} failed: {}", pin.join(" "), reason(&output, None)));
                     r.smoke.push(Probe {
                         code,
                         output,
@@ -794,7 +874,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                     (code != 0).then_some(probe)
                 })
             });
-            r
+            (r, stuck)
         };
         // Stamped, synced and swapped in whole: even a power loss leaves the old record or the new one.
         let save = |r: &mut Record| {
@@ -817,9 +897,15 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             if !dir.join(&p).is_dir() {
                 return Err(format!("{tool} {p}: not installed"));
             }
-            let rec = swap(p, Some(cur.clone()), true);
+            let (mut rec, stuck) = swap(p, Some(cur.clone()), true);
             let line = (rec.failed.as_ref())
                 .map(|f| format!("{tool}: {f} failed on {}; no second rollback", rec.version));
+            // back on a pre-hotswap version, but mise's shim still runs the one left: red, said
+            let line = line.or_else(|| {
+                let s = stuck?;
+                rec.failed = Some(s.clone());
+                Some(format!("{tool}: rolled back to {}, but mise still runs {cur}: {s}", rec.version))
+            });
             (rec, line)
         } else {
             // drained before `current` moves: a refusal leaves the running version active
@@ -829,7 +915,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                     return Ok(1);
                 }
             }
-            let mut rec = swap(new.clone(), prev.clone(), false);
+            let (mut rec, _) = swap(new.clone(), prev.clone(), false);
             // recorded before any rollback: a crash past its repoint then reads red, never the
             // previous version's green; a failed save still rolls back, and is reported after
             early = save(&mut rec).err();
@@ -840,10 +926,20 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                     Some(p) if !dir.join(&p).is_dir() => format!("{p} not installed"),
                     Some(p) => {
                         // no network: the previous version is still on disk
-                        let back = swap(p, before, true);
+                        let (back, stuck) = swap(p, before, true);
                         rec.smoke.extend(back.smoke);
                         (rec.version, rec.previous, rec.held) =
                             (back.version, back.previous, back.failed.is_none());
+                        // on a pre-hotswap version, but mise's shim still runs the red one: not
+                        // held, so no tick reads it as a good rollback
+                        if let Some(s) = stuck {
+                            rec.held = false;
+                            rec.failed = Some(format!("{f}; after rollback {s}"));
+                            return format!(
+                                "{tool}: {f} failed; rolled back to {}, but mise still runs {new}: {s}",
+                                rec.version
+                            );
+                        }
                         let again = back.failed.map_or(String::new(), |a| {
                             rec.failed = Some(format!("{f}; after rollback {a}"));
                             format!(", where {a} failed too")
@@ -870,6 +966,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                 fs::remove_dir_all(d.path()).ok();
             }
         }
+        // the prune that drops the last version predating this crate frees mise's copy
+        mise_free(tool, m, &home);
         println!("{line}");
         match [early, late].into_iter().flatten().collect::<Vec<_>>() {
             e if e.is_empty() => Ok(i32::from(!rec.ok)),

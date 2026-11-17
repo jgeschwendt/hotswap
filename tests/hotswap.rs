@@ -322,13 +322,18 @@ fn suite() {
     };
     // exit code, stdout + stderr, then the stubs' log, the temp dir read as `~`
     let path = format!("{}:{}:/bin:/usr/bin", old.display(), bin.display());
+    // the scratch HOME stands in for the account's (HOTSWAP_TEST_HOME), so the agent's load path
+    // runs; an empty value unsets it, and the account's own home, from its passwd entry, refuses
     let launch = |c: &mut Command, args: &[&str], envs: &[(&str, &str)]| {
-        let o = (c.args(args).env("HOME", p).env("PATH", &path))
+        (c.args(args).env("HOME", p).env("PATH", &path))
+            .env("HOTSWAP_TEST_HOME", p)
             .env_remove("MISE_DATA_DIR")
             .env_remove("XDG_DATA_HOME")
-            .envs(envs.iter().copied())
-            .output()
-            .unwrap();
+            .envs(envs.iter().copied());
+        if envs.contains(&("HOTSWAP_TEST_HOME", "")) {
+            c.env_remove("HOTSWAP_TEST_HOME");
+        }
+        let o = c.output().unwrap();
         let log = fs::read_to_string(p.join("log")).unwrap_or_default();
         fs::remove_file(p.join("log")).ok();
         let out = String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).into_owned();
@@ -587,6 +592,37 @@ fn suite() {
         format!("1\nsetup out\nsetup err\n{t_print}t@2 setup\n")
     );
     rm("t.setup.code");
+    assert_eq!(run(&["setup"]), format!("0\n~/.local/bin/t\n{t_print}"));
+    // the agent is never loaded for a HOME that is not the account's (the passwd entry's): a
+    // scratch HOME must not claim the label in the real domain
+    put_file("booted", "");
+    assert_eq!(
+        go("t", &["setup"], &[("HOTSWAP_TEST_HOME", "")]),
+        format!(
+            "0\n~/.local/bin/t\nhotswap: dev.gigantic.t.upgrade not loaded: ~ is not this account's home\n{t_print}launchctl print-disabled gui/$UID\n"
+        )
+    );
+    rm("booted");
+    // the label loaded from another plist is said and left alone, never bootstrapped over
+    put_file(
+        "launchctl.print.out",
+        "path = /elsewhere/dev.gigantic.t.upgrade.plist\n",
+    );
+    assert_eq!(
+        run(&["setup"]),
+        format!(
+            "0\n~/.local/bin/t\ndev.gigantic.t.upgrade is loaded from /elsewhere/dev.gigantic.t.upgrade.plist, not ~/Library/LaunchAgents/dev.gigantic.t.upgrade.plist; left as it is\n{t_print}"
+        )
+    );
+    rm("launchctl.print.out");
+    // no launchctl on PATH (Linux): no agent, no plist, no log, no line
+    let bare_path = p.join("empty");
+    fs::create_dir_all(&bare_path).unwrap();
+    fs::remove_file(&t_plist).unwrap();
+    let bare_path = bare_path.display().to_string();
+    let no_launchctl = [("PATH", bare_path.as_str())];
+    assert_eq!(go("t", &["setup"], &no_launchctl), "0\n~/.local/bin/t\n");
+    assert!(!t_plist.exists());
     assert_eq!(run(&["setup"]), format!("0\n~/.local/bin/t\n{t_print}"));
     // a `current` whose version went is repaired by the next upgrade even off mise; the repair's
     // failed install leaves no stage
@@ -964,7 +1000,8 @@ fn suite() {
     );
     fs::remove_file(p.join("launchctl.print.out")).unwrap();
     fs::remove_file(p.join("booted")).unwrap();
-    assert_eq!(go("forget", &[], &[]), format!("0\n{t_print}"));
+    // and with no launchctl, forget touches no agent
+    assert_eq!(go("forget", &[], &no_launchctl), "0\n");
     assert!(!t_plist.exists());
     for f in ["t.json", "t.latest", "t.lock"] {
         assert!(!state_dir.join(f).exists());
@@ -1083,9 +1120,9 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     let plist = hotswap_plist(p);
     let smoke = "chk m\n";
     let mm = format!("~/.local/bin/m\n{print}\n");
-    // a migration says, once, here and in the agent's log, how to drop mise's stale copy
-    let moved = "m: moved off mise; run `mise unuse -g packslip:x/m` to drop mise's copy\n";
-    let mmv = format!("~/.local/bin/m\n{moved}{print}\n");
+    // once no version on disk predates the crate, a green says, once, here and in the agent's
+    // log, that mise's copy can go
+    let freed = "m: no version here needs mise any more; run `mise unuse -g packslip:x/m` to drop mise's copy\n";
 
     // a version mise holds that cannot be read stops the move, naming it, before anything moves
     on_mise();
@@ -1106,17 +1143,17 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     let mut other = Command::new("sleep").arg("30").spawn().unwrap();
     let reload_pid = p.join(".local/state/hotswap/m.reload");
     fs::write(&reload_pid, other.id().to_string()).unwrap();
-    assert_eq!(by_shim(&["setup"], &xdg_env), format!("0\n{mmv}"));
+    assert_eq!(by_shim(&["setup"], &xdg_env), format!("0\n{mm}"));
     other.kill().unwrap();
     other.wait().unwrap();
-    let (log, outcome) = waited(2);
+    let (log, outcome) = waited(1);
     assert_eq!(
         log,
         format!(
             "{reload}\nlaunchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist"
         )
     );
-    assert_eq!(outcome, format!("{moved}{reloaded}"));
+    assert_eq!(outcome, reloaded.to_string());
     assert_eq!(versions(), "1 2 current → 2");
     assert_eq!(fs::read(ms.join("2/m")).unwrap(), fs::read(&me).unwrap());
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
@@ -1127,9 +1164,16 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     loaded(&shim, "not running");
     put_file("launchctl.bootstrap.code", "5");
     assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
-    let (_, outcome) = waited(3);
+    let (_, outcome) = waited(2);
     let failed = "hotswap: gui/$UID/dev.gigantic.m.upgrade not reloaded from ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist after 5 tries: bootstrap out\n";
-    assert_eq!(outcome, format!("{moved}{reloaded}{failed}"));
+    assert_eq!(outcome, format!("{reloaded}{failed}"));
+    // the waiter drops its pid file just after its last line
+    for _ in 0..100 {
+        if !reload_pid.exists() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
     assert!(!reload_pid.exists());
     let boot = "launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist\n";
     let disabled = "launchctl print-disabled gui/$UID\n";
@@ -1140,7 +1184,7 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
         from_layout(&["setup"]),
         format!("0\n~/.local/bin/m\n{refused}{print}\n{disabled}{boot}")
     );
-    assert_eq!(waited(4).1, format!("{moved}{reloaded}{failed}{refused}"));
+    assert_eq!(waited(3).1, format!("{reloaded}{failed}{refused}"));
     // a label the user disabled stays unloaded: no bootstrap
     put_file(
         "launchctl.print-disabled.out",
@@ -1171,7 +1215,7 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     put_file("active", "3");
     assert_eq!(
         by_shim(&["setup"], &[("MISE_DATA_DIR", &mise_env)]),
-        format!("0\n{mmv}")
+        format!("0\n{mm}")
     );
     assert_eq!(versions(), "1 2 3 current → 3");
     put_file("active", "2");
@@ -1210,14 +1254,14 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     let stranded = by_shim(&["upgrade"], &[("MISE_DATA_DIR", &mise_env)]);
     assert_eq!(
         stranded,
-        format!("0\nm 2: green, 1 smoke probes\n{moved}{print}\n{m_latest}{print}\n{smoke}")
+        format!("0\nm 2: green, 1 smoke probes\n{print}\n{m_latest}{print}\n{smoke}")
     );
     assert_eq!(versions(), "1 2 current → 2");
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
     loaded(&shim, "not running");
-    assert_eq!(waited(2), (reload.clone(), format!("{moved}{reloaded}")));
+    assert_eq!(waited(1), (reload.clone(), reloaded.to_string()));
     thread::sleep(Duration::from_millis(300));
-    assert_eq!(fs::read_to_string(&agent_log).unwrap().lines().count(), 2);
+    assert_eq!(fs::read_to_string(&agent_log).unwrap().lines().count(), 1);
 
     // smoke red, so the old tick `mise use`s 1, whose setup puts the link and the plist back on
     // the shim; the waiter, waiting out the old tick, loads the plist on disk: the old world,
@@ -1226,13 +1270,13 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     fs::write(&agent_log, "").unwrap();
     loaded(&shim, "running");
     put_file("active", "2");
-    assert_eq!(by_shim(&["setup"], &xdg_env), format!("0\n{mmv}"));
+    assert_eq!(by_shim(&["setup"], &xdg_env), format!("0\n{mm}"));
     put_file("active", "1");
     assert_eq!(by_shim(&["setup"], &[]), "0\nm@1 setup\n");
     loaded(&shim, "not running");
-    let (log, outcome) = waited(2);
+    let (log, outcome) = waited(1);
     assert_eq!(log, reload);
-    assert_eq!(outcome, format!("{moved}{reloaded}"));
+    assert_eq!(outcome, reloaded.to_string());
     assert_eq!(fs::read_link(&link).unwrap(), shim);
     assert_eq!(fs::read_to_string(&agent).unwrap(), "mise's\n");
 
@@ -1272,13 +1316,29 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
             && rolled.contains("\nmise use -g packslip:x/m@1\nm@1 setup\n"),
         "{rolled}"
     );
-    waited(2);
+    waited(1);
     loaded(&link, "not running");
     assert_eq!(versions(), "1 2 current → 1");
     assert_eq!(active(), "1");
     assert_eq!(fs::read_link(&link).unwrap(), shim);
     assert_eq!(fs::read_to_string(&agent).unwrap(), "mise's\n");
     assert_eq!(record(), r#""1" null false true "2""#);
+    // the same with `mise use` refused: back on 1, but mise's shim still runs red 2 — said in the
+    // line, red, and recorded not held, so no tick reads it as a good rollback
+    on_mise();
+    fs::write(&agent_log, "").unwrap();
+    put_file("active", "2");
+    put_file("mise.code", "1");
+    let stuck = by_shim(&["upgrade"], &mise);
+    assert!(
+        stuck.starts_with("1\nm: chk m failed; rolled back to 1, but mise still runs 2: mise use -g packslip:x/m@1 failed: mise: use refused\n"),
+        "{stuck}"
+    );
+    waited(1);
+    loaded(&link, "not running");
+    assert_eq!(record(), r#""1" null false false "2""#);
+    assert_eq!(active(), "2");
+    fs::remove_file(p.join("mise.code")).unwrap();
     // had mise kept 2 (its `use` failing), the shim's 2 never moves `current` onto itself: red,
     // it is held, and --retry takes it again deliberately
     put_file("active", "2");
@@ -1297,11 +1357,11 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
         "{retried}"
     );
     assert_eq!(versions(), "1 2 current → 2");
-    // --back onto mise's 1 moves mise too; a refused `mise use` is a recorded step, not a stop
+    // --back onto mise's 1 moves mise too; refused, it is red and said: the shim still runs 2
     put_file("mise.code", "1");
     let back = by_shim(&["upgrade", "--back"], &mise);
     assert!(
-        back.starts_with("0\nm 1: green, 2 smoke probes\n"),
+        back.starts_with("1\nm: rolled back to 1, but mise still runs 2: mise use -g packslip:x/m@1 failed: mise: use refused\n"),
         "{back}"
     );
     let smoke: Value =
@@ -1310,15 +1370,54 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
         (&smoke["smoke"][0]["probe"], &smoke["smoke"][0]["code"]),
         (&json!("mise use -g packslip:x/m@1"), &json!(1))
     );
+    assert_eq!(record(), r#""1" "2" false false "2""#);
     assert_eq!(versions(), "1 2 current → 1");
     fs::remove_file(p.join("mise.code")).unwrap();
     // the loop closes: back on mise, the old release's tick bumps mise to 3 and runs 3's setup
     // through the shim, which moves the host onto 3 past the stale 2
     copy_me("3");
     put_file("active", "3");
-    assert_eq!(by_shim(&["setup"], &mise), format!("0\n{mmv}"));
+    assert_eq!(by_shim(&["setup"], &mise), format!("0\n{mm}"));
     assert_eq!(versions(), "1 2 3 current → 3");
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
+    // 3 green keeps 1, its previous, which still needs mise: no hint; 4 green prunes 1, the last
+    // version that predates the crate, and says, once, that mise's copy can go
+    put_file("tag", "3");
+    let three = launch(&mut Command::new(ms.join("3/m")), &["upgrade"], &[]);
+    assert!(
+        three.starts_with("0\nm 3: green") && !three.contains("needs mise"),
+        "{three}"
+    );
+    assert_eq!(versions(), "1 3 current → 3");
+    put_file("tag", "4");
+    put_file("next", "4");
+    let four = launch(&mut Command::new(ms.join("3/m")), &["upgrade"], &[]);
+    assert!(
+        four.starts_with("0\nm 4: green") && four.contains(freed),
+        "{four}"
+    );
+    assert!(
+        fs::read_to_string(&agent_log)
+            .unwrap()
+            .contains(freed.trim_end())
+    );
+    assert_eq!(versions(), "3 4 current → 4");
+    // a rollback onto 3, which links the crate though mise holds it, leaves mise's pin alone
+    let back = launch(
+        &mut Command::new(ms.join("3/m")),
+        &["upgrade", "--back"],
+        &[],
+    );
+    assert!(
+        back.starts_with("0\nm 3: green") && !back.contains("mise use"),
+        "{back}"
+    );
+    let again = launch(
+        &mut Command::new(ms.join("3/m")),
+        &["upgrade", "--back"],
+        &[],
+    );
+    assert!(!again.contains("needs mise"), "{again}");
 }
 
 /// `agent_plist("m", "m")` under `p`, escaped as the crate escapes it.
