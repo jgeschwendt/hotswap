@@ -9,41 +9,52 @@ use std::{
     io::{self, Read, pipe},
     os::unix::{
         fs::{PermissionsExt, symlink},
-        process::CommandExt,
+        process::{CommandExt, ExitStatusExt},
     },
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::{self, Command, Stdio},
     thread,
     time::{Duration, Instant, SystemTime},
 };
 
-/// packslip, pinned: its version, then per host (`uname -sm`) the release platform and its
-/// sha256, as jdx's install script for that version publishes them; a hotswap change bumps it.
-const PACKSLIP: (&str, [[&str; 3]; 3]) = (
+/// packslip, pinned: its version, then per host (`uname -sm`) the release platform, the hash
+/// command the host ships (`shasum` on every macOS, coreutils' `sha256sum` on Linux) and the sha256
+/// jdx's install script for that version publishes; a hotswap change bumps it.
+const PACKSLIP: (&str, [[&str; 4]; 3]) = (
     "1.11.4",
     [
         [
             "Darwin arm64",
             "darwin-arm64",
+            "shasum -a 256",
             "2b21dc68d54c23a56123f9f9d7402a8b9cfb1e6950c5d4966730ec5cee20146b",
         ],
         [
             "Linux aarch64",
             "linux-arm64",
+            "sha256sum",
             "c0763f4063d5b6d008dd7f3f117126c335861f16980d71895c7f9bec24c4cdd0",
         ],
         [
             "Linux x86_64",
             "linux-x64",
+            "sha256sum",
             "bc6211617a25f0ea8c0638cc2295aa9251b7f54c5087105bb46bf44f6357e8c1",
         ],
     ],
 );
 
-/// Waits out the upgrade agent's running job, then reloads it from its plist: `$0` the service,
-/// `$1` the domain, `$2` the plist.
-const RELOAD: &str = r#"while launchctl print "$0" | grep -q "state = running"; do sleep 1; done
-launchctl bootout "$0"; launchctl bootstrap "$1" "$2""#;
+/// Waits out the upgrade agent's running job, boots it out, waits (30 s at most) for launchd to let
+/// go — a bootstrap in that window fails — then bootstraps it from its plist, five tries 2 s apart,
+/// printing one line on the outcome and removing its pid file: `$0` the service, `$1` the domain,
+/// `$2` the plist, `$3` the pid file.
+const RELOAD: &str = r#"while launchctl print "$0" 2>/dev/null | grep -q "state = running"; do sleep 1; done
+launchctl bootout "$0" >/dev/null 2>&1
+i=0; while launchctl print "$0" >/dev/null 2>&1 && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done
+i=0; until e=$(launchctl bootstrap "$1" "$2" 2>&1); do
+  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; rm -f "$3"; exit 1; }; sleep 2
+done
+echo "hotswap: $0 reloaded from $2"; rm -f "$3""#;
 
 /// What a tool runs around its swap, and where its releases come from; every field may be empty.
 #[derive(Default, Deserialize)]
@@ -98,18 +109,27 @@ fn home() -> PathBuf {
     PathBuf::from(env::var_os("HOME").unwrap_or_default())
 }
 
-/// `$XDG_DATA_HOME/<sub>`, else `~/.local/share/<sub>`.
-fn data(sub: &str) -> PathBuf {
-    env::var_os("XDG_DATA_HOME")
-        .map_or_else(|| home().join(".local/share"), PathBuf::from)
-        .join(sub)
+/// `$HOME`, refused when unset: a relative path would write into the cwd.
+fn homed() -> Result<PathBuf, String> {
+    Some(home())
+        .filter(|h| !h.as_os_str().is_empty())
+        .ok_or("HOME unset".into())
 }
 
-/// hotswap's root, `$XDG_DATA_HOME/hotswap`, else `~/.local/share/hotswap`: `<tool>/<version>/`
-/// per version, `<tool>/current` the active one, and the pinned packslip with its state.
+/// hotswap's root, always `~/.local/share/hotswap`, so a shell, a launchd agent and bifrost agree:
+/// `<tool>/<version>/` per version, `<tool>/current` the active one, and the pinned packslip with
+/// its state.
 #[must_use]
 pub fn root() -> PathBuf {
-    data("hotswap")
+    home().join(".local/share/hotswap")
+}
+
+/// mise's data dir, to find what a mise install left: `MISE_DATA_DIR`, else `XDG_DATA_HOME/mise`,
+/// else `~/.local/share/mise`.
+fn mise() -> PathBuf {
+    (env::var_os("MISE_DATA_DIR").map(PathBuf::from))
+        .or_else(|| env::var_os("XDG_DATA_HOME").map(|x| PathBuf::from(x).join("mise")))
+        .unwrap_or_else(|| home().join(".local/share/mise"))
 }
 
 /// The executable's name: the manifest's `bin`, else the tool's.
@@ -117,9 +137,11 @@ fn name<'a>(tool: &'a str, m: &'a Manifest) -> &'a str {
     Some(&*m.bin).filter(|b| !b.is_empty()).unwrap_or(tool)
 }
 
-/// The active version: what `<dir>/current` names.
+/// The active version: what `<dir>/current` names, when that version is on disk.
 fn current(dir: &Path) -> Option<String> {
-    (fs::read_link(dir.join("current")).ok()).map(|p| p.display().to_string())
+    (fs::read_link(dir.join("current")).ok())
+        .filter(|v| dir.join(v).is_dir())
+        .map(|p| p.display().to_string())
 }
 
 /// Makes `at` a link to `to` by renaming a fresh link over it, so no reader finds it absent.
@@ -147,7 +169,10 @@ fn out(c: &mut Command) -> Result<String, String> {
     if o.status.success() {
         return Ok(String::from_utf8_lossy(&o.stdout).into());
     }
-    let why = (err.lines().find_map(|l| l.trim().strip_prefix("0: "))).or(err.lines().last());
+    let sig = (o.status.signal()).map(|n| format!("killed by signal {n}"));
+    let why = (err.lines().find_map(|l| l.trim().strip_prefix("0: ")))
+        .or(err.lines().last())
+        .or(sig.as_deref());
     let mut esc = false;
     Err((why.unwrap_or_default().chars())
         .filter(|&c| {
@@ -163,36 +188,46 @@ fn uid() -> String {
     (out(Command::new("id").arg("-u")).unwrap_or_default().trim()).to_owned()
 }
 
-/// The pinned packslip under the root, fetched and checked against its sha256 when absent; never
-/// one found on PATH.
+/// The pinned packslip under the root, its sha256 checked before each use and fetched again on a
+/// mismatch; never one found on PATH.
 fn packslip(root: &Path) -> Result<PathBuf, Box<dyn Error>> {
     let (v, pins) = PACKSLIP;
     let host = out(Command::new("uname").arg("-sm"))?;
     let host = host.trim();
-    let &[_, os, sum] = (pins.iter().find(|p| p[0] == host)).ok_or(format!(
+    let &[_, os, hash, sum] = (pins.iter().find(|p| p[0] == host)).ok_or(format!(
         "{host} is unsupported: packslip builds darwin-arm64, linux-arm64 and linux-x64"
     ))?;
-    let exe = root.join(format!("packslip/{v}/packslip"));
-    if !exe.exists() {
-        let (tmp, url) = (
-            exe.with_extension("tmp"),
-            format!("https://packslip.dev/v{v}/packslip-v{v}-{os}"),
-        );
+    let (dir, url) = (
+        root.join(format!("packslip/{v}")),
+        format!("https://packslip.dev/v{v}/packslip-v{v}-{os}"),
+    );
+    let exe = dir.join("packslip");
+    let pinned = |p: &Path| {
+        let mut a = hash.split(' ');
+        out(Command::new(a.next().unwrap_or_default()).args(a).arg(p))
+            .map(|o| o.split(' ').next() == Some(sum))
+    };
+    if !pinned(&exe).unwrap_or(false) {
+        // a name of its own: a concurrent bootstrap never writes into the file this one checks
+        let tmp = dir.join(format!("packslip.{}.tmp", process::id()));
         (|| -> Result<(), Box<dyn Error>> {
-            fs::create_dir_all(root.join(format!("packslip/{v}")))?;
+            fs::create_dir_all(&dir)?;
             out(Command::new("curl")
-                .args(["-fsSL", "-o"])
+                .args(["-q", "-fsSL", "-o"])
                 .arg(&tmp)
                 .arg(&url))?;
-            let got = out(Command::new("sha256sum").arg(&tmp))?;
-            if got.split(' ').next() != Some(sum) {
-                fs::remove_file(&tmp).ok();
+            if !pinned(&tmp)? {
                 return Err(format!("{url} is not the pinned sha256 {sum}").into());
             }
             fs::set_permissions(&tmp, fs::Permissions::from_mode(0o755))?;
-            Ok(fs::rename(&tmp, &exe)?)
+            File::open(&tmp)?.sync_all()?;
+            fs::rename(&tmp, &exe)?;
+            Ok(File::open(&dir)?.sync_all()?)
         })()
-        .map_err(|w| format!("packslip {v} bootstrap: {w}"))?;
+        .map_err(|w| {
+            fs::remove_file(&tmp).ok();
+            format!("packslip {v} bootstrap: {w}")
+        })?;
     }
     Ok(exe)
 }
@@ -209,10 +244,18 @@ fn place(stage: &Path, rel: &Path, bin: &str, dest: &Path) -> io::Result<()> {
     fs::create_dir_all(dest.parent().unwrap_or(dest)).and_then(|()| fs::rename(stage, dest))
 }
 
-/// The empty stage `<root>/stage/<tool>`, whose parent packslip locks.
+/// The empty stage `<root>/stage/<tool>`, whose parent packslip locks; a leftover that will not go
+/// is an error naming it, never a tree a copy nests into.
 fn stage(tool: &str) -> io::Result<PathBuf> {
     let s = root().join("stage").join(tool);
-    fs::remove_dir_all(&s).ok();
+    // a copy keeps its modes, so a leftover can hold a dir its owner cannot list
+    if fs::remove_dir_all(&s).is_err() && s.exists() {
+        Command::new("chmod")
+            .args(["-R", "u+rwx"])
+            .arg(&s)
+            .status()?;
+        fs::remove_dir_all(&s).map_err(|e| io::Error::other(format!("{}: {e}", s.display())))?;
+    }
     fs::create_dir_all(root().join("stage")).map(|()| s)
 }
 
@@ -268,12 +311,13 @@ fn fetch(tool: &str, m: &Manifest, floor: &str) -> Result<String, Box<dyn Error>
 /// One line naming the failure.
 pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
     (|| -> Result<PathBuf, Box<dyn Error>> {
+        let home = homed()?;
         let (dir, bin) = (root().join(tool), name(tool, m));
-        let link = home().join(".local/bin").join(bin);
+        let link = home.join(".local/bin").join(bin);
         let cur = current(&dir);
         // the running binary as mise's `installs/<key>/<version>/<rel>`
         let ran = (|| {
-            let installs = fs::canonicalize(data("mise").join("installs")).ok()?;
+            let installs = fs::canonicalize(mise().join("installs")).ok()?;
             let at = fs::canonicalize(env::current_exe().ok()?).ok()?;
             let mut c = at.strip_prefix(&installs).ok()?.iter();
             let (key, v) = (installs.join(c.next()?), c.next()?.to_str()?.to_owned());
@@ -300,23 +344,34 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         }
         relink(&dir.join("current").join(bin), &link)?;
         let label = format!("dev.gigantic.{tool}.upgrade");
-        let plist = home().join(format!("Library/LaunchAgents/{label}.plist"));
+        let plist = home.join(format!("Library/LaunchAgents/{label}.plist"));
         let (gui, plist_s) = (format!("gui/{}", uid()), plist.display().to_string());
         let target = format!("{gui}/{label}");
         let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+        // one waiter at a time: a setup step inside the same run finds the first one alive
+        let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
+        let waiting = (fs::read_to_string(&pid).ok())
+            .is_some_and(|n| out(Command::new("kill").args(["-0", n.trim()])).is_ok());
         // loaded from this plist, so never a scratch HOME's; launchd re-reads it only on a bootstrap
-        if said.contains(&format!("path = {plist_s}"))
+        if !waiting
+            && said.contains(&format!("path = {plist_s}"))
             && !said.contains(&format!("program = {}", link.display()))
         {
             fs::write(&plist, agent_plist(tool, bin))?;
-            // its own group and no output: it outlives the upgrade run it waits out, and holds no
-            // step's pipe open
-            (Command::new("/bin/sh").args(["-c", RELOAD, &target, &gui, &plist_s]))
+            fs::create_dir_all(home.join("Library/Logs"))?;
+            fs::create_dir_all(home.join(".local/state/hotswap"))?;
+            let log = home.join(format!("Library/Logs/{label}.log"));
+            let log = File::options().create(true).append(true).open(log)?;
+            // its own group, writing only to the agent's log: it outlives the upgrade run it waits
+            // out and holds no step's pipe open
+            let waiter = (Command::new("/bin/sh").args(["-c", RELOAD, &target, &gui, &plist_s]))
+                .arg(&pid)
                 .process_group(0)
                 .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
+                .stdout(log.try_clone()?)
+                .stderr(log)
                 .spawn()?;
+            fs::write(&pid, waiter.id().to_string())?;
         }
         Ok(link)
     })()
@@ -385,14 +440,34 @@ pub fn agent_plist(tool: &str, bin: &str) -> String {
     )
 }
 
-/// Drops the tool's record, lock and versions, so a reinstall starts clean; `<tool> setup
-/// --remove` calls it.
-pub fn forget(tool: &str) {
-    let dir = home().join(".local/state/hotswap");
-    for e in ["json", "lock"] {
-        fs::remove_file(dir.join(format!("{tool}.{e}"))).ok();
+/// The tool's lock beside its record in `state`, held until dropped; the kernel drops it if the
+/// process dies.
+fn lock(tool: &str, state: &Path) -> Result<File, String> {
+    let lock = state.join(format!("{tool}.lock"));
+    let f = fs::create_dir_all(state).and_then(|()| File::create(&lock));
+    let f = f.map_err(|e| format!("{tool}: {}: {e}", lock.display()))?;
+    f.try_lock()
+        .map_err(|_| format!("{tool}: another hotswap is running"))?;
+    Ok(f)
+}
+
+/// Drops what is the tool's alone, under its lock — record, latest hint, reload pid, versions,
+/// stage, packslip's export of it — so a reinstall starts clean; the pinned packslip and its trust state, which other
+/// tools share, stay. `<tool> setup --remove` calls it.
+///
+/// # Errors
+/// HOME unset, or another hotswap of the tool running.
+pub fn forget(tool: &str, m: &Manifest) -> Result<(), String> {
+    let state = homed()?.join(".local/state/hotswap");
+    let _lock = lock(tool, &state)?;
+    for e in ["json", "latest", "lock", "reload"] {
+        fs::remove_file(state.join(format!("{tool}.{e}"))).ok();
     }
-    fs::remove_dir_all(root().join(tool)).ok();
+    for d in [root().join(tool), root().join("stage").join(tool)] {
+        fs::remove_dir_all(d).ok();
+    }
+    fs::remove_file(root().join("packslip/bin").join(name(tool, m))).ok();
+    Ok(())
 }
 
 /// The tool's `upgrade` verb; `args` are the words after it: none, `--check`, `--back` or
@@ -408,52 +483,67 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             [m @ ("--back" | "--check" | "--retry")] => m,
             _ => return Err(format!("usage: {bin} upgrade [--check | --back | --retry]")),
         };
-        let home = home();
-        if home.as_os_str().is_empty() {
-            return Err("HOME unset".into());
-        }
+        let state = homed()?.join(".local/state/hotswap");
         let dir = root().join(tool);
+        let (uid, path, hint) = (
+            uid(),
+            state.join(format!("{tool}.json")),
+            state.join(format!("{tool}.latest")),
+        );
+        let _lock = (mode != "--check")
+            .then(|| lock(tool, &state))
+            .transpose()?;
+        // a host the old release bumped through mise but never set up (a refused drain, a kill)
+        // runs this through mise's shim with no layout: ensure moves it in here
+        if current(&dir).is_none() && mode != "--check" {
+            ensure(tool, m)?;
+        }
         let cur = current(&dir).ok_or(format!(
             "{tool}: no version under {}; run {bin} setup",
             dir.display()
         ))?;
-        let uid = uid();
-        let state = home.join(".local/state/hotswap");
-        let path = state.join(format!("{tool}.json"));
-        // Held until return; the kernel drops it if the process dies.
-        let lock = state.join(format!("{tool}.lock"));
-        let _lock = (mode != "--check")
-            .then(|| {
-                let f = fs::create_dir_all(&state).and_then(|()| File::create(&lock));
-                let f = f.map_err(|e| format!("{tool}: {}: {e}", lock.display()))?;
-                f.try_lock()
-                    .map_err(|_| format!("{tool}: another hotswap is running"))?;
-                Ok::<_, String>(f)
-            })
-            .transpose()?;
         let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
         let mut new = cur.clone();
         if mode != "--back" {
             // the releases/latest redirect names the tag and spends no API quota: the cheap
             // "anything newer?" before packslip, which chooses the version
             let url = format!("https://github.com/{}/releases/latest", m.repo);
+            // `-q`: a ~/.curlrc never shapes it; followed to the end, so a renamed repo's 301 still
+            // lands on the tag
             let to = out(cmd("curl")
-                .args(["-fsSI", "-o", "/dev/null", "-w", "%{redirect_url}"])
+                .args(["-q", "-fsSIL", "-o", "/dev/null", "-w", "%{url_effective}"])
                 .arg(&url))
             .map_err(|w| format!("{tool}: {url}: {w}"))?;
             let latest = (to.rsplit_once("/tag/").map(|t| t.1.trim_start_matches('v')))
                 .ok_or(format!("{tool}: {url} names no release"))?;
             // a release that went red waits for a newer one, unless retried
-            if let Some(r) = (old.as_ref().and_then(|r| r.red.as_ref()))
-                .filter(|r| mode != "--retry" && *r == latest)
-            {
-                println!("{tool}: {r} is red; waiting for a newer release");
-                return Ok(i32::from(mode.is_empty()));
+            let red = old.as_ref().and_then(|r| r.red.as_deref());
+            let held = |v: &str| mode != "--retry" && red == Some(v);
+            let wait = |v: &str| {
+                println!("{tool}: {v} is red; waiting for a newer release");
+                Ok(i32::from(mode.is_empty()))
+            };
+            if held(latest) {
+                return wait(latest);
             }
             if mode == "--check" && newer(latest, &cur) {
                 new = latest.into();
             } else if newer(latest, &cur) {
-                let v = fetch(tool, m, &cur).map_err(|e| format!("{tool}: {e}"))?;
+                // what packslip chose for this redirect before: while it is not newer, or red, the
+                // tick spends no install on it (a withdrawn latest)
+                let known = (fs::read_to_string(&hint).ok())
+                    .and_then(|h| Some(h.strip_prefix(&format!("{latest} "))?.to_owned()))
+                    .filter(|k| mode != "--retry" && (!newer(k, &cur) || held(k)));
+                let v = if let Some(k) = known {
+                    k
+                } else {
+                    let v = fetch(tool, m, &cur).map_err(|e| format!("{tool}: {e}"))?;
+                    fs::write(&hint, format!("{latest} {v}")).ok();
+                    v
+                };
+                if held(&v) {
+                    return wait(&v);
+                }
                 if newer(&v, &cur) {
                     new = v;
                 }
@@ -575,6 +665,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
         let (prev, before, green) = old.map_or((None, None, false), |r| {
             (Some(r.version), r.previous, r.ok || r.held)
         });
+        let mut early = None;
         let (mut rec, line) = if mode == "--back" {
             let p = before.ok_or_else(|| format!("{tool}: no previous version"))?;
             if !dir.join(&p).is_dir() {
@@ -594,8 +685,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             }
             let mut rec = swap(new.clone(), prev.clone());
             // recorded before any rollback: a crash past its repoint then reads red, never the
-            // previous version's green
-            save(&mut rec)?;
+            // previous version's green; a failed save still rolls back, and is reported after
+            early = save(&mut rec).err();
             let line = rec.failed.clone().map(|f| {
                 let why = match prev {
                     None => "no previous version".into(),
@@ -621,7 +712,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
         let n = rec.smoke.len();
         let line =
             line.unwrap_or_else(|| format!("{tool} {}: green, {n} smoke probes", rec.version));
-        save(&mut rec)?;
+        let late = save(&mut rec).err();
         // green: keep the current version and the previous, the rollback target
         let keep = [
             Some(&*rec.version),
@@ -634,7 +725,10 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             }
         }
         println!("{line}");
-        Ok(i32::from(!rec.ok))
+        match [early, late].into_iter().flatten().collect::<Vec<_>>() {
+            e if e.is_empty() => Ok(i32::from(!rec.ok)),
+            e => Err(e.join("; ")),
+        }
     })()
     .unwrap_or_else(|e| {
         eprintln!("{e}");
