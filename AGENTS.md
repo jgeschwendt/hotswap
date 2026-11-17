@@ -2,7 +2,7 @@
 
 ```stele
 kind: system
-purpose: hotswap — the crate in each gigantic tool — `ensure`, `install`, `upgrade` on packslip and its own version dirs (drain, repoint, swap, smoke, settle or roll back), `forget`, `agent_plist`, `root`
+purpose: hotswap — the crate in each gigantic tool — `ensure` (layout, upgrade agent), `install`, `upgrade` on packslip and its own version dirs (drain, swap, smoke, settle or roll back), `forget`, `root`
 commands:
   check: mise run check
   cover: mise run cover
@@ -20,11 +20,11 @@ The design is `docs/index.html` — the only design source.
 
 ## Map
 
-| node  | kind      | purpose                                                                                                                                                                           | unfold                                           |
-| ----- | --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
-| docs  | container | the design — `index.html` (GitHub Pages) is the only design source — release, install, mechanism, the tool contract, bifrost, next; `page.css` holds only what is hotswap's       | `stele unfold docs` · or read `docs/AGENTS.md`   |
-| src   | container | crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise), `install`, `upgrade`, `forget`, `agent_plist`, `root` | `stele unfold src` · or read `src/AGENTS.md`     |
-| tests | container | end-to-end suite — `hotswap.rs` re-execs itself as tool `t`, walking a temp $HOME through every branch on sh stubs and a fake mise; `--ignored` runs real packslip and grove      | `stele unfold tests` · or read `tests/AGENTS.md` |
+| node  | kind      | purpose                                                                                                                                                                               | unfold                                           |
+| ----- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| docs  | container | the design — `index.html` (GitHub Pages) is the only design source — release, install, mechanism, the tool contract, bifrost, next; `page.css` holds only what is hotswap's           | `stele unfold docs` · or read `docs/AGENTS.md`   |
+| src   | container | crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise, the upgrade agent), `install`, `upgrade`, `forget`, `root` | `stele unfold src` · or read `src/AGENTS.md`     |
+| tests | container | end-to-end suite — `hotswap.rs` re-execs itself as tool `t`, walking a temp $HOME through every branch on sh stubs and a fake mise; `--ignored` runs real packslip and grove          | `stele unfold tests` · or read `tests/AGENTS.md` |
 
 ## Indexes
 
