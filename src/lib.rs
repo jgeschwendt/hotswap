@@ -46,13 +46,13 @@ const PACKSLIP: (&str, [[&str; 4]; 3]) = (
 
 /// Waits out the upgrade agent's running job, boots it out, waits (30 s at most) for launchd to let
 /// go — a bootstrap in that window fails — then bootstraps it from its plist, five tries 2 s apart,
-/// printing one line on the outcome and removing its pid file: `$0` the service, `$1` the domain,
-/// `$2` the plist, `$3` the pid file.
+/// printing one line on the outcome; its pid file goes, or reads `unloaded` for the next `ensure`
+/// to load: `$0` the service, `$1` the domain, `$2` the plist, `$3` the pid file.
 const RELOAD: &str = r#"while launchctl print "$0" 2>/dev/null | grep -q "state = running"; do sleep 1; done
 launchctl bootout "$0" >/dev/null 2>&1
 i=0; while launchctl print "$0" >/dev/null 2>&1 && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done
 i=0; until e=$(launchctl bootstrap "$1" "$2" 2>&1); do
-  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; rm -f "$3"; exit 1; }; sleep 2
+  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; echo unloaded > "$3"; exit 1; }; sleep 2
 done
 echo "hotswap: $0 reloaded from $2"; rm -f "$3""#;
 
@@ -66,6 +66,8 @@ pub struct Manifest {
     pub bin: String,
     /// run before the swap; a non-zero exit refuses it
     pub drain: Vec<Vec<String>>,
+    /// seconds a `packslip install` may take, 600 when unset; expiry kills its process group
+    pub fetch_timeout: Option<u64>,
     /// the GitHub repo that releases the tool, `owner/repo`
     pub repo: String,
     /// the tool's own `setup` argv, run after every swap
@@ -163,24 +165,92 @@ fn newer(a: &str, b: &str) -> bool {
 }
 
 /// `c`'s stdout, else its reason in one line: packslip's `0:` line, else stderr's last, uncoloured.
-fn out(c: &mut Command) -> Result<String, String> {
-    let o = c.output().map_err(|e| e.to_string())?;
+fn out(c: &mut Command) -> Result<String, Box<dyn Error>> {
+    let o = c.output()?;
     let err = String::from_utf8_lossy(&o.stderr);
     if o.status.success() {
         return Ok(String::from_utf8_lossy(&o.stdout).into());
     }
-    let sig = (o.status.signal()).map(|n| format!("killed by signal {n}"));
+    Err(reason(&err, o.status.signal()).into())
+}
+
+/// A failure's reason in one line: packslip's `0:` line, else the last line, else the signal that
+/// killed it, uncoloured.
+fn reason(err: &str, sig: Option<i32>) -> String {
+    let sig = sig.map(|n| format!("killed by signal {n}"));
     let why = (err.lines().find_map(|l| l.trim().strip_prefix("0: ")))
         .or(err.lines().last())
         .or(sig.as_deref());
     let mut esc = false;
-    Err((why.unwrap_or_default().chars())
+    (why.unwrap_or_default().chars())
         .filter(|&c| {
             let keep = !esc && c != '\x1b';
             esc = (esc || c == '\x1b') && c != 'm';
             keep
         })
-        .collect())
+        .collect()
+}
+
+/// Runs `c` in its own process group, stdout and stderr on one pipe drained on a thread while the
+/// deadline is polled; past `secs` the group is killed. Returns the exit code (-1 for a signal, the
+/// deadline or no spawn), the output, and the signal.
+fn run(mut c: Command, secs: u64) -> (i32, String, Option<i32>) {
+    // capped: an absurd deadline would overflow the Instant and panic
+    let end = Instant::now() + Duration::from_secs(secs.min(86_400));
+    (|| {
+        let (mut rx, tx) = pipe()?;
+        let spawned = (c.stdout(tx.try_clone()?).stderr(tx))
+            .process_group(0)
+            .spawn();
+        // the Command holds the pipe's write ends until dropped
+        drop(c);
+        let mut child = spawned?;
+        let out = thread::spawn(move || {
+            let mut buf = vec![];
+            rx.read_to_end(&mut buf).map(|_| buf)
+        });
+        // the pipe can outlive the child: a step that backgrounds a process hands it the write end
+        let mut status = None;
+        while status.is_none() || !out.is_finished() {
+            status = status.or(child.try_wait()?);
+            if Instant::now() > end {
+                return status.map_or_else(
+                    || {
+                        (Command::new("kill").args(["-KILL", "--", &format!("-{}", child.id())]))
+                            .status()
+                            .map(|_| (-1, format!("timed out after {secs}s"), None))
+                    },
+                    |s: process::ExitStatus| {
+                        let held = format!("output held open past {secs}s");
+                        Ok((s.code().unwrap_or(-1), held, s.signal()))
+                    },
+                );
+            }
+            thread::sleep(Duration::from_millis(20));
+        }
+        let (buf, s) = (
+            out.join().unwrap_or(Ok(vec![]))?,
+            status.unwrap_or_default(),
+        );
+        Ok((
+            s.code().unwrap_or(-1),
+            String::from_utf8_lossy(&buf).into(),
+            s.signal(),
+        ))
+    })()
+    .unwrap_or_else(|e: io::Error| (-1, e.to_string(), None))
+}
+
+/// Writes `b` to `path` whole: a synced temp renamed over it, the dir synced, so even a power loss
+/// leaves the old file or the new one.
+fn persist(path: &Path, b: &[u8]) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let (tmp, dir) = (PathBuf::from(tmp), path.parent().unwrap_or(path));
+    fs::write(&tmp, b)?;
+    File::open(&tmp)?.sync_all()?;
+    fs::rename(&tmp, path)?;
+    File::open(dir)?.sync_all()
 }
 
 /// This user's id, for the launchd domain `gui/<uid>`.
@@ -244,10 +314,17 @@ fn place(stage: &Path, rel: &Path, bin: &str, dest: &Path) -> io::Result<()> {
     fs::create_dir_all(dest.parent().unwrap_or(dest)).and_then(|()| fs::rename(stage, dest))
 }
 
-/// The empty stage `<root>/stage/<tool>`, whose parent packslip locks; a leftover that will not go
-/// is an error naming it, never a tree a copy nests into.
+/// The tool's own packslip dirs, `<root>/packslip/<tool>/`: its `state`, `config`, `data`, `bin`
+/// and `stage`, which packslip locks for a whole install, so no tool's install waits on another's;
+/// only the pinned binary is shared.
+fn own(tool: &str) -> PathBuf {
+    root().join("packslip").join(tool)
+}
+
+/// The empty stage `<root>/packslip/<tool>/stage`; a leftover that will not go is an error naming
+/// it, never a tree a copy nests into.
 fn stage(tool: &str) -> io::Result<PathBuf> {
-    let s = root().join("stage").join(tool);
+    let s = own(tool).join("stage");
     // a copy keeps its modes, so a leftover can hold a dir its owner cannot list
     if fs::remove_dir_all(&s).is_err() && s.exists() {
         Command::new("chmod")
@@ -256,47 +333,69 @@ fn stage(tool: &str) -> io::Result<PathBuf> {
             .status()?;
         fs::remove_dir_all(&s).map_err(|e| io::Error::other(format!("{}: {e}", s.display())))?;
     }
-    fs::create_dir_all(root().join("stage")).map(|()| s)
+    fs::create_dir_all(own(tool)).map(|()| s)
 }
 
 /// Installs the release packslip chooses (its latest, withdrawn ones skipped) under the manifest's
-/// signer into `<root>/<tool>/<V>/` and returns V; one not newer than `floor` is discarded.
+/// signer into `<root>/<tool>/<V>/` and returns V; one not newer than `floor` is discarded, and a
+/// failure leaves no stage.
 fn fetch(tool: &str, m: &Manifest, floor: &str) -> Result<String, Box<dyn Error>> {
-    let root = root();
+    let (root, own, bin) = (root(), own(tool), name(tool, m));
     let ps = packslip(&root)?;
-    let (stage, bins, bin) = (stage(tool)?, root.join("packslip/bin"), name(tool, m));
-    fs::create_dir_all(&bins)?;
-    // packslip's state, pins and installs live in the root: the user's own packslip use cannot
-    // change our trust state; `--bin-dir` keeps its export off `~/.local/bin`, which is ours
-    let said = out(Command::new(ps)
-        .args([
+    let stage = stage(tool)?;
+    let got = (|| -> Result<String, Box<dyn Error>> {
+        let bins = own.join("bin");
+        fs::create_dir_all(&bins)?;
+        // packslip's state, pins and installs are the tool's own: neither the user's packslip use
+        // nor another tool's install can change or block ours; `--bin-dir` keeps its export off
+        // `~/.local/bin`, which is ours
+        let mut c = Command::new(ps);
+        (c.args([
             "install",
             &format!("github.com/{}", m.repo),
             "--pin",
             &m.signer,
-        ])
+        ]))
         .arg("--install-dir")
         .arg(&stage)
         .arg("--bin-dir")
         .arg(&bins)
-        .env("XDG_CONFIG_HOME", root.join("packslip/config"))
-        .env("XDG_DATA_HOME", root.join("packslip/data"))
-        .env("XDG_STATE_HOME", root.join("packslip/state")))
-    .map_err(|w| format!("packslip install failed: {w}"))?;
-    let v = (said.lines())
-        .find_map(|l| l.strip_prefix("Installed ")?.split(' ').nth(1))
-        .ok_or("packslip named no version")?;
-    if !newer(v, floor) {
-        fs::remove_dir_all(&stage)?;
-        return Ok(v.into());
+        .env("XDG_CONFIG_HOME", own.join("config"))
+        .env("XDG_DATA_HOME", own.join("data"))
+        .env("XDG_STATE_HOME", own.join("state"));
+        let (code, said, sig) = run(c, m.fetch_timeout.unwrap_or(600));
+        if code != 0 {
+            return Err(format!("packslip install failed: {}", reason(&said, sig)).into());
+        }
+        let v = (said.lines())
+            .find_map(|l| l.strip_prefix("Installed ")?.split(' ').nth(1))
+            .ok_or("packslip named no version")?;
+        if !newer(v, floor) {
+            fs::remove_dir_all(&stage)?;
+            return Ok(v.into());
+        }
+        // the export names where the release keeps the binary; the tree moves, so it dangles after
+        let rel = (fs::read_link(bins.join(bin)).ok())
+            .zip(fs::canonicalize(&stage).ok())
+            .and_then(|(t, s)| Some(t.strip_prefix(s).ok()?.to_owned()))
+            .ok_or(format!("{} {v} exports no {bin}", m.repo))?;
+        place(&stage, &rel, bin, &root.join(tool).join(v))?;
+        Ok(v.into())
+    })();
+    if got.is_err() {
+        fs::remove_dir_all(&stage).ok();
     }
-    // the export names where the release keeps the binary; the tree moves, so it dangles after
-    let rel = (fs::read_link(bins.join(bin)).ok())
-        .zip(fs::canonicalize(&stage).ok())
-        .and_then(|(t, s)| Some(t.strip_prefix(s).ok()?.to_owned()))
-        .ok_or(format!("{} {v} exports no {bin}", m.repo))?;
-    place(&stage, &rel, bin, &root.join(tool).join(v))?;
-    Ok(v.into())
+    got
+}
+
+/// The running binary as mise's `installs/<key>/<version>/<rel>`: the key's dir, the version and
+/// the rel.
+fn from_mise() -> Option<(PathBuf, String, PathBuf)> {
+    let installs = fs::canonicalize(mise().join("installs")).ok()?;
+    let at = fs::canonicalize(env::current_exe().ok()?).ok()?;
+    let mut c = at.strip_prefix(&installs).ok()?.iter();
+    let (key, v) = (installs.join(c.next()?), c.next()?.to_str()?.to_owned());
+    Some((key, v, c.as_path().to_owned()))
 }
 
 /// Brings the tool into hotswap's layout and returns `~/.local/bin/<bin>`, the path its agents
@@ -315,15 +414,7 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let (dir, bin) = (root().join(tool), name(tool, m));
         let link = home.join(".local/bin").join(bin);
         let cur = current(&dir);
-        // the running binary as mise's `installs/<key>/<version>/<rel>`
-        let ran = (|| {
-            let installs = fs::canonicalize(mise().join("installs")).ok()?;
-            let at = fs::canonicalize(env::current_exe().ok()?).ok()?;
-            let mut c = at.strip_prefix(&installs).ok()?.iter();
-            let (key, v) = (installs.join(c.next()?), c.next()?.to_str()?.to_owned());
-            Some((key, v, c.as_path().to_owned()))
-        })()
-        .filter(|(_, v, _)| cur.as_ref().is_none_or(|c| newer(v, c)));
+        let ran = from_mise().filter(|(_, v, _)| cur.as_ref().is_none_or(|c| newer(v, c)));
         if let Some((key, v, rel)) = ran {
             for d in fs::read_dir(&key)?.flatten() {
                 let n = d.file_name();
@@ -348,10 +439,18 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let (gui, plist_s) = (format!("gui/{}", uid()), plist.display().to_string());
         let target = format!("{gui}/{label}");
         let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
-        // one waiter at a time: a setup step inside the same run finds the first one alive
         let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
-        let waiting = (fs::read_to_string(&pid).ok())
-            .is_some_and(|n| out(Command::new("kill").args(["-0", n.trim()])).is_ok());
+        let mark = fs::read_to_string(&pid).unwrap_or_default();
+        // the last waiter failed every bootstrap and left the agent unloaded: load it now
+        if mark.trim() == "unloaded" && said.is_empty() {
+            out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s]))
+                .map_err(|w| format!("launchctl bootstrap {plist_s}: {w}"))?;
+            fs::remove_file(&pid)?;
+        }
+        // one waiter at a time: a setup step inside the same run finds the first one alive; a pid
+        // reused after a logout killed the waiter is not one, since its command names no plist
+        let waiting = out(Command::new("ps").args(["-ww", "-o", "command=", "-p", mark.trim()]))
+            .is_ok_and(|c| c.contains(&plist_s));
         // loaded from this plist, so never a scratch HOME's; launchd re-reads it only on a bootstrap
         if !waiting
             && said.contains(&format!("path = {plist_s}"))
@@ -451,22 +550,21 @@ fn lock(tool: &str, state: &Path) -> Result<File, String> {
     Ok(f)
 }
 
-/// Drops what is the tool's alone, under its lock — record, latest hint, reload pid, versions,
-/// stage, packslip's export of it — so a reinstall starts clean; the pinned packslip and its trust state, which other
-/// tools share, stay. `<tool> setup --remove` calls it.
+/// Drops what is the tool's alone, under its lock — record, latest hint, reload pid, versions, its
+/// packslip dirs (trust state, export, stage) — so a reinstall starts clean; the pinned packslip
+/// binary, shared, stays. `<tool> setup --remove` calls it.
 ///
 /// # Errors
 /// HOME unset, or another hotswap of the tool running.
-pub fn forget(tool: &str, m: &Manifest) -> Result<(), String> {
+pub fn forget(tool: &str) -> Result<(), String> {
     let state = homed()?.join(".local/state/hotswap");
     let _lock = lock(tool, &state)?;
     for e in ["json", "latest", "lock", "reload"] {
         fs::remove_file(state.join(format!("{tool}.{e}"))).ok();
     }
-    for d in [root().join(tool), root().join("stage").join(tool)] {
+    for d in [root().join(tool), own(tool)] {
         fs::remove_dir_all(d).ok();
     }
-    fs::remove_file(root().join("packslip/bin").join(name(tool, m))).ok();
     Ok(())
 }
 
@@ -494,8 +592,10 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             .then(|| lock(tool, &state))
             .transpose()?;
         // a host the old release bumped through mise but never set up (a refused drain, a kill)
-        // runs this through mise's shim with no layout: ensure moves it in here
-        if current(&dir).is_none() && mode != "--check" {
+        // runs this through mise's shim with no layout, and a `current` whose version went is
+        // repaired; a binary run from anywhere else (a checkout) touches nothing
+        let dangling = dir.join("current").symlink_metadata().is_ok();
+        if current(&dir).is_none() && mode != "--check" && (dangling || from_mise().is_some()) {
             ensure(tool, m)?;
         }
         let cur = current(&dir).ok_or(format!(
@@ -503,7 +603,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             dir.display()
         ))?;
         let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
-        let mut new = cur.clone();
+        let (mut new, mut pending, me) =
+            (cur.clone(), None, format!("dev.gigantic.{tool}.upgrade"));
         if mode != "--back" {
             // the releases/latest redirect names the tag and spends no API quota: the cheap
             // "anything newer?" before packslip, which chooses the version
@@ -526,21 +627,29 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             if held(latest) {
                 return wait(latest);
             }
-            if mode == "--check" && newer(latest, &cur) {
+            // what packslip chose for this redirect within the hour, honoured by the agent's own
+            // tick (launchd names it in XPC_SERVICE_NAME) and reported by --check: while it is not
+            // newer, or red, no install is spent on it — a withdrawn latest, or one whose signed
+            // bundle is not up yet, which the hour's expiry then retries
+            let fresh = (fs::metadata(&hint).and_then(|f| f.modified()).ok())
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age < Duration::from_secs(3600));
+            let tick = mode == "--check"
+                || (mode.is_empty() && env::var("XPC_SERVICE_NAME").is_ok_and(|n| n == me));
+            let known = (fs::read_to_string(&hint).ok())
+                .filter(|_| fresh && tick)
+                .and_then(|h| Some(h.strip_prefix(&format!("{latest} "))?.to_owned()))
+                .filter(|k| !newer(k, &cur) || held(k));
+            if let Some(k) = known.filter(|_| newer(latest, &cur)) {
+                if held(&k) {
+                    return wait(&k);
+                }
+                pending = Some(latest.to_owned());
+            } else if mode == "--check" && newer(latest, &cur) {
                 new = latest.into();
             } else if newer(latest, &cur) {
-                // what packslip chose for this redirect before: while it is not newer, or red, the
-                // tick spends no install on it (a withdrawn latest)
-                let known = (fs::read_to_string(&hint).ok())
-                    .and_then(|h| Some(h.strip_prefix(&format!("{latest} "))?.to_owned()))
-                    .filter(|k| mode != "--retry" && (!newer(k, &cur) || held(k)));
-                let v = if let Some(k) = known {
-                    k
-                } else {
-                    let v = fetch(tool, m, &cur).map_err(|e| format!("{tool}: {e}"))?;
-                    fs::write(&hint, format!("{latest} {v}")).ok();
-                    v
-                };
+                let v = fetch(tool, m, &cur).map_err(|e| format!("{tool}: {e}"))?;
+                persist(&hint, format!("{latest} {v}").as_bytes()).ok();
                 if held(&v) {
                     return wait(&v);
                 }
@@ -549,44 +658,11 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                 }
             }
         }
-        // One pipe for stdout and stderr, drained on a thread while the deadline is polled.
         let run = |argv: &[String]| {
-            let secs = m.timeout.unwrap_or(120);
-            // Capped: an absurd `timeout` would overflow the Instant and panic.
-            let end = Instant::now() + Duration::from_secs(secs.min(86_400));
-            (|| {
-                let (mut rx, tx) = pipe()?;
-                let mut child = cmd(argv.first().map_or("", String::as_str))
-                    .args(argv.iter().skip(1))
-                    .stdout(tx.try_clone()?)
-                    .stderr(tx)
-                    // Its own group, so the kill on expiry reaches whatever the step started too.
-                    .process_group(0)
-                    .spawn()?;
-                let out = thread::spawn(move || {
-                    let mut buf = vec![];
-                    rx.read_to_end(&mut buf).map(|_| buf)
-                });
-                // The pipe can outlive the child: a step that backgrounds a process hands it the write end.
-                let mut code = None;
-                while code.is_none() || !out.is_finished() {
-                    code = code.or(child.try_wait()?.map(|s| s.code().unwrap_or(-1)));
-                    if Instant::now() > end {
-                        return code.map_or_else(
-                            || {
-                                (cmd("kill").args(["-KILL", "--", &format!("-{}", child.id())]))
-                                    .status()
-                                    .map(|_| (-1, format!("timed out after {secs}s")))
-                            },
-                            |c| Ok((c, format!("output held open past {secs}s"))),
-                        );
-                    }
-                    thread::sleep(Duration::from_millis(20));
-                }
-                let buf = out.join().unwrap_or(Ok(vec![]))?;
-                Ok((code.unwrap_or(-1), String::from_utf8_lossy(&buf).into()))
-            })()
-            .unwrap_or_else(|e: io::Error| (-1, e.to_string()))
+            let mut c = cmd(argv.first().map_or("", String::as_str));
+            c.args(argv.iter().skip(1));
+            let (code, out, _) = run(c, m.timeout.unwrap_or(120));
+            (code, out)
         };
         // Settled on this version, green or red: only a new version or `--back` moves it.
         if let Some(r) = old
@@ -598,12 +674,12 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             } else {
                 format!("red at {}", r.failed.as_deref().unwrap_or_default())
             };
-            println!("{tool} {}: {state}", r.version);
+            let pending = pending.map_or(String::new(), |l| format!("; {l} pending verification"));
+            println!("{tool} {}: {state}{pending}", r.version);
             return Ok(i32::from(!r.ok && mode != "--check"));
         }
         // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke
         // probes; never the tool's own upgrade agent, whose kick would kill this very swap.
-        let me = format!("dev.gigantic.{tool}.upgrade");
         let kick = m.agents.iter().filter(|a| **a != me).map(|a| {
             ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
                 .map(String::from)
@@ -653,13 +729,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             r.at = SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs());
-            let tmp = path.with_extension("tmp");
-            serde_json::to_vec(&r)
-                .map_err(io::Error::from)
-                .and_then(|b| fs::write(&tmp, b))
-                .and_then(|()| File::open(&tmp)?.sync_all())
-                .and_then(|()| fs::rename(&tmp, &path))
-                .and_then(|()| File::open(&state)?.sync_all())
+            (serde_json::to_vec(&r).map_err(io::Error::from))
+                .and_then(|b| persist(&path, &b))
                 .map_err(|e| format!("{tool}: {}: {e}", path.display()))
         };
         let (prev, before, green) = old.map_or((None, None, false), |r| {
