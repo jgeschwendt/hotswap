@@ -262,23 +262,23 @@
       does not name the plist, reused after a logout killed the waiter, is not one). The waiter waits out the
       agent's running job, boots it out, waits up to 30 s for launchd to let go, then bootstraps
       it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
-      (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). When
-      all five fail it leaves <code class="code">unloaded</code> in the pid file, and the next
-      <code class="code">ensure</code> — any later setup — loads the agent from whatever plist is
-      on disk (the shim's, after a rolled-back migration); a mark found with the agent loaded (a
-      logout failed the five, the login loaded it) or its label disabled by the user is cleared
-      with no bootstrap, and a refused load is one line on stderr and in the agent's log, never a
-      failed setup, the mark kept for the next try. grove's and routines'
-      daemons do not call <code class="code">ensure</code> at start, so until a setup runs the
-      upgrade agent stays unloaded (its log says why), at most until the next login. A
+      (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). After
+      five failed bootstraps the agent stays unloaded until a later
+      <code class="code">setup</code> or the next login loads it from whatever plist is on disk
+      (the shim's, after a rolled-back migration); nothing heals it unattended, and its log says
+      why. A
       run launchd starts between the waiter's last look and its bootout is killed at its start,
       before any swap; launchd offers no check-and-bootout. mise's dirs and the user's
       <code class="code">packslip:jgeschwendt/&lt;tool&gt;</code> line are left alone: its copy
       and shim go stale, a stale copy never moves the layout back, and removing the line is the
-      user's; each migration says so in one line, on stderr and in the upgrade agent's log:
-      <code class="code">&lt;tool&gt;: moved off mise; run `mise unuse -g packslip:&lt;repo&gt;`
-      to drop mise's copy</code>, since a shell with mise's shims ahead of
-      <code class="code">~/.local/bin</code> still runs that copy.</li>
+      user's. A migration lists, in <code class="code">~/.local/state/hotswap/&lt;tool&gt;.mise</code>,
+      the copies that predate this crate (all but the running one); their setup needs mise's shim,
+      so mise's copy must stay while one is on disk. The green swap whose prune drops the last of
+      them — or the migration, when none was copied — says once, on stderr and in the agent's
+      log, <code class="code">&lt;tool&gt;: no version here needs mise any more; run `mise unuse
+      -g packslip:&lt;repo&gt;` to drop mise's copy</code>, since a shell with mise's shims ahead
+      of <code class="code">~/.local/bin</code> still runs it; the list then goes, and
+      <code class="code">forget</code> drops it too.</li>
     <li><strong>the migration, in sequence</strong> — the old release's upgrade agent runs
       through mise's shim and bumps mise first, then drains, runs setup, kickstarts and smokes.
       The new release's <code class="code">setup</code> step, through the shim, runs
@@ -295,10 +295,14 @@
     <li><strong>the first release goes red after migrating</strong> — its rollback target is
       mise's copy of a pre-hotswap release, whose setup relinks
       <code class="code">~/.local/bin/&lt;bin&gt;</code> and the plists onto mise's shim. So a
-      rollback or <code class="code">--back</code> onto a version mise also holds runs
-      <code class="code">mise use -g packslip:&lt;repo&gt;@&lt;V&gt;</code> after repointing
-      <code class="code">current</code> and before that setup, and the shim runs the good version;
-      a missing mise or a refused call is a recorded step, never a stop. This is the one place
+      rollback or <code class="code">--back</code> onto a version that predates this crate (the
+      <code class="code">.mise</code> list) runs <code class="code">mise use -g
+      packslip:&lt;repo&gt;@&lt;V&gt;</code> after repointing <code class="code">current</code> and
+      before that setup, and the shim runs the good version; onto a version that links this crate
+      it never touches mise's pin. When that call fails the shim still runs the red version, and
+      the run says so: <code class="code">rolled back to &lt;O&gt;, but mise still runs &lt;N&gt;:
+      mise use … failed: &lt;reason&gt;</code>, exit 1, and a record on O, red N, not held, its
+      <code class="code">failed</code> naming the call. This is the one place
       the crate still calls mise, and it retires once no machine's rollback target predates the
       crate. The host is then back on mise: the old release's tick holds the red version (it
       reads the same record), and the next release it bumps runs its setup through the shim,
@@ -319,7 +323,12 @@
       loaded and not disabled, and reloads it through the waiter when it is loaded from a stale
       plist; <code class="code">forget</code> boots it out (when loaded from this HOME's plist) and
       removes the plist. A tool never writes, loads or boots it out, so no tool's bootstrap can
-      land in the waiter's bootout window. It runs <code class="code">~/.local/bin/&lt;bin&gt;
+      land in the waiter's bootout window. A label loaded from another plist is said and left
+      alone; a HOME that is not the account's (its passwd entry's) never loads it, so a scratch
+      HOME cannot claim the label in the real domain; with no <code class="code">launchctl</code>
+      on PATH (Linux) there is no agent, no plist and no log. To pause upgrades,
+      <code class="code">launchctl disable gui/&lt;uid&gt;/dev.gigantic.&lt;tool&gt;.upgrade</code>:
+      hotswap leaves a disabled agent alone, while a bootout alone is undone by the next setup. It runs <code class="code">~/.local/bin/&lt;bin&gt;
       upgrade</code> every 900 s on a <code class="code">PATH</code> of
       <code class="code">~/.local/bin</code> and the system dirs, never at load (a load-time
       upgrade would race the swap that ran setup), logging to
