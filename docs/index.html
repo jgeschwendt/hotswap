@@ -119,7 +119,7 @@
   </header>
   <figure class="figure">
     <div class="chart-frame" id="flow">
-      <svg width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-label="one upgrade: ① latest from the releases/latest redirect; ② packslip installs the release it chooses, pinned to the tool's signer, into a stage moved to its version dir; ③ the drain runs, then the current symlink is repointed; ④ setup, kickstart and smoke; green: ⑤ the record, then ⑥ prune to current and previous; red: ⑦ current is repointed to the previous version with no network and ④ runs again, then ⑧ the record holds the failed release off. The layout: ~/.local/share/hotswap/grove/ holds 2026.11.2 and 2026.11.4 and the current link; packslip/1.11.4 is fetched by pinned sha256; packslip's state, config and data dirs sit beside it; ~/.local/bin/grove resolves through current; the record is ~/.local/state/hotswap/grove.json.">
+      <svg width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-label="one upgrade: ① latest from the releases/latest redirect; ② packslip installs the release it chooses, pinned to the tool's signer, into a stage moved to its version dir; ③ the drain runs, then the current symlink is repointed; ④ setup, kickstart and smoke; green: ⑤ the record, then ⑥ prune to current and previous; red: ⑦ current is repointed to the previous version with no network and ④ runs again, then ⑧ the record holds the failed release off. The layout: ~/.local/share/hotswap/grove/ holds 2026.11.2 and 2026.11.4 and the current link; packslip/1.11.4 is fetched by pinned sha256 and shared; packslip/grove holds grove's own packslip bin, config, data, stage and state; ~/.local/bin/grove resolves through current; the record is ~/.local/state/hotswap/grove.json.">
         <defs>
           <marker id="flow-head" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0L8,4L0,8Z" /></marker>
         </defs>
@@ -141,10 +141,10 @@
           <rect class="flow-box is-accent" x="28" y="114" width="288" height="22" rx="4" />
           <text class="flow-path-name is-on-accent" x="36" y="129">current → 2026.11.4</text><text class="flow-note is-on-accent" x="212" y="129">active version</text>
           <text class="flow-path-name" x="24" y="156">packslip/1.11.4/packslip</text>
-          <text class="flow-note" x="36" y="174">fetched by pinned sha256 when absent</text>
-          <text class="flow-path-name" x="24" y="198">packslip/{state,config,data}/</text>
-          <text class="flow-note" x="36" y="216">its trust state, ours alone</text>
-          <text class="flow-path-name" x="24" y="240">stage/grove/</text><text class="flow-note" x="212" y="240">mid-install only</text>
+          <text class="flow-note" x="36" y="174">pinned sha256, checked each use; shared</text>
+          <text class="flow-path-name" x="24" y="198">packslip/grove/</text><text class="flow-note" x="212" y="198">grove's alone</text>
+          <text class="flow-path-name" x="36" y="216">bin config data stage state</text>
+          <text class="flow-note" x="36" y="234">trust state, export, the install</text>
           <text class="flow-path-name" x="12" y="272">~/.local/bin/grove → …/current/grove</text>
           <text class="flow-note" x="12" y="290">what a shell and the agents run</text>
           <text class="flow-name" x="12" y="326">the record</text>
@@ -166,8 +166,8 @@
         <text class="flow-time" x="546" y="288">red</text>
       </svg>
     </div>
-    <figcaption>One upgrade and the layout it leaves, grove as the example; paths are the XDG
-      defaults.</figcaption>
+    <figcaption>One upgrade and the layout it leaves, grove as the example; every path hangs
+      off <code class="code">HOME</code>.</figcaption>
   </figure>
   <div class="table-wrap">
     <table data-table>
@@ -176,12 +176,12 @@
         <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it</td></tr>
         <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code></td></tr>
         <tr><td>latest</td><td><code class="code">curl -q -fsSIL -w %{url_effective} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>, a renamed repo's 301 followed and <code class="code">~/.curlrc</code> ignored: only "anything newer than current?"; packslip chooses the version</td></tr>
-        <tr><td>fetch, verify</td><td class="table-mono">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/stage/&lt;tool&gt; --bin-dir &lt;root&gt;/packslip/bin</td></tr>
+        <tr><td>fetch, verify</td><td><code class="code">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/packslip/&lt;tool&gt;/stage --bin-dir &lt;root&gt;/packslip/&lt;tool&gt;/bin</code>, killed with its process group past the manifest's <code class="code">fetch_timeout</code> (600 s)</td></tr>
         <tr><td>activate, roll back</td><td><code class="code">current</code> repointed: a fresh link renamed over it; no network</td></tr>
         <tr><td>what runs the version</td><td><code class="code">~/.local/bin/&lt;bin&gt;</code> → <code class="code">&lt;root&gt;/&lt;tool&gt;/current/&lt;bin&gt;</code>: the agents' program and the head of every step's <code class="code">PATH</code>; it needs only <code class="code">HOME</code>, which every entry point refuses to run without</td></tr>
-        <tr><td>trust state</td><td>packslip's, under <code class="code">&lt;root&gt;/packslip/</code></td></tr>
+        <tr><td>trust state</td><td>packslip's, per tool, under <code class="code">&lt;root&gt;/packslip/&lt;tool&gt;/</code>; only the pinned binary is shared</td></tr>
         <tr><td>prune</td><td>after a green swap, current and previous kept</td></tr>
-        <tr><td>uninstall</td><td><code class="code">&lt;tool&gt; setup --remove</code>, whose <code class="code">hotswap::forget</code>, under the tool's lock, also deletes <code class="code">&lt;root&gt;/&lt;tool&gt;</code>, its stage and packslip's export of it; the pinned packslip and its trust state, shared, stay</td></tr>
+        <tr><td>uninstall</td><td><code class="code">&lt;tool&gt; setup --remove</code>, whose <code class="code">hotswap::forget</code>, under the tool's lock, also deletes <code class="code">&lt;root&gt;/&lt;tool&gt;</code> and <code class="code">&lt;root&gt;/packslip/&lt;tool&gt;</code>; the pinned packslip, shared, stays</td></tr>
       </tbody>
     </table>
   </div>
@@ -201,10 +201,13 @@
       archive), never retries, and fails hard on a 403 or a network error. It reads
       <code class="code">XDG_STATE_HOME</code>, <code class="code">XDG_CONFIG_HOME</code> and
       <code class="code">XDG_DATA_HOME</code> (not <code class="code">XDG_CACHE_HOME</code> or
-      <code class="code">TMPDIR</code>); hotswap points all three into
-      <code class="code">&lt;root&gt;/packslip/</code>, so the user's own packslip use cannot
-      change our trust state; an admin's <code class="code">/etc/packslip/pins.d</code> can only
-      narrow it. No minimum release age.</li>
+      <code class="code">TMPDIR</code>), and holds blocking locks on its state, bin and install
+      dirs for a whole install, whose download may run 24 h on a trickle. hotswap points all three
+      into the tool's own <code class="code">&lt;root&gt;/packslip/&lt;tool&gt;/</code>, so neither
+      the user's packslip use nor another tool's stalled install touches or blocks ours (run
+      2026-11-17: grove and routines alone 6.1 s and 5.2 s, together 4.6 s), and kills the call at
+      a deadline; an admin's <code class="code">/etc/packslip/pins.d</code> can only narrow it.
+      No minimum release age.</li>
     <li><strong>packslip itself</strong> — pinned by a constant in the crate, its version and a
       sha256 per platform from jdx's published install script (each checked by download,
       2026-11-17); a hotswap change bumps it. Its sha256 is checked before each use
@@ -226,14 +229,21 @@
       newer than current?" and keeps a tick off the API. On yes, <code class="code">packslip
       install</code> runs without <code class="code">--version</code>, so a withdrawn release is
       skipped; its <code class="code">Installed &lt;project&gt; &lt;V&gt; at …</code> line names V,
-      and a V not newer than current is discarded. <code class="code">~/.local/state/hotswap/&lt;tool&gt;.latest</code>
-      remembers which V a redirect resolved to: while the redirect says the same and that V is
-      not newer than current, or is red, a tick spends no install on it. The export goes to
-      <code class="code">&lt;root&gt;/packslip/bin</code>, never <code class="code">~/.local/bin</code>,
+      and a V not newer than current is discarded. <code class="code">~/.local/state/hotswap/&lt;tool&gt;.latest</code>,
+      written whole, remembers which V a redirect resolved to. For an hour after, the agent's own
+      tick (launchd names it in <code class="code">XPC_SERVICE_NAME</code>) spends no install
+      while the redirect says the same and V is not newer than current, or is red, and
+      <code class="code">--check</code> reports the same:
+      <code class="code">&lt;tool&gt; &lt;cur&gt;: up to date; &lt;L&gt; pending verification</code>.
+      A run by hand, bifrost's or <code class="code">--retry</code> always installs. The hour
+      bounds a release public before its signed bundle (grove v2026.11.4: release 18:10:54,
+      bundle 18:11:05), when packslip skips it. The export goes to
+      <code class="code">&lt;root&gt;/packslip/&lt;tool&gt;/bin</code>, never <code class="code">~/.local/bin</code>,
       and names where the release keeps its binary: kept deeper, it gets a
       <code class="code">&lt;V&gt;/&lt;bin&gt;</code> link.</li>
     <li><strong>failures before the swap</strong> — a GitHub rate limit, a network failure, or a
-      failed bootstrap or install during a tick prints one line and exits 2 before the drain:
+      failed, stalled (past the deadline) or killed bootstrap or install during a tick prints one
+      line and exits 2 before the drain, leaving no stage:
       <code class="code">current</code> and the record are as they were (a fetched version may sit
       beside them) and nothing is held red; the next tick tries again. Only a release that
       installed and then failed a step is red. A record that cannot be saved does not stop a
@@ -248,10 +258,15 @@
       repointed; a stage that will not go is made writable, else named. It relinks
       <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the loaded upgrade agent runs
       another program, rewrites its plist and starts one detached waiter (its pid in
-      <code class="code">&lt;tool&gt;.reload</code> beside the record). The waiter waits out the
+      <code class="code">&lt;tool&gt;.reload</code> beside the record; a pid whose command line
+      does not name the plist, reused after a logout killed the waiter, is not one). The waiter waits out the
       agent's running job, boots it out, waits up to 30 s for launchd to let go, then bootstraps
       it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
-      (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). A
+      (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). When
+      all five fail it leaves <code class="code">unloaded</code> in the pid file, and the next
+      <code class="code">ensure</code> — any later setup — loads the agent. grove's and routines'
+      daemons do not call <code class="code">ensure</code> at start, so until a setup runs the
+      upgrade agent stays unloaded (its log says why), at most until the next login. A
       run launchd starts between the waiter's last look and its bootout is killed at its start,
       before any swap; launchd offers no check-and-bootout. mise's dirs and the user's
       <code class="code">packslip:jgeschwendt/&lt;tool&gt;</code> line are left alone: its copy
@@ -265,8 +280,11 @@
       green, the shim again if the old release rolled back and rewrote it. Interrupted after the
       bump — a refused drain, a kill, a reboot — no setup ran; the next tick runs the new binary
       through the shim, and its <code class="code">upgrade</code>, finding no usable
-      <code class="code">current</code> (none, or one whose version is gone), runs
-      <code class="code">ensure</code> itself and swaps. No hand-run setup is needed.</li>
+      <code class="code">current</code>, runs <code class="code">ensure</code> itself and swaps. No
+      hand-run setup is needed. <code class="code">upgrade</code> calls
+      <code class="code">ensure</code> only run from mise's installs or to repair a
+      <code class="code">current</code> whose version is gone; run from anywhere else (a checkout)
+      with no layout it touches nothing and says <code class="code">run &lt;bin&gt; setup</code>.</li>
     <li><strong>a manual setup during an upgrade</strong> — not serialised:
       <code class="code">ensure</code> runs as the old release's setup step while that release
       holds the lock, so it cannot take it. Its writes are atomic renames: relinking
@@ -385,7 +403,7 @@
       <code class="code">hotswap::agent_plist</code> among them; install routine docs into
       <code class="code">~/.routines</code>, leaving an edited copy alone; register MCP servers;
       print what it did. <code class="code">--remove</code> inverts it and calls
-      <code class="code">hotswap::forget(tool, &amp;manifest)</code>, which drops what is the
+      <code class="code">hotswap::forget(tool)</code>, which drops what is the
       tool's alone (§ install) so a reinstall starts clean; the tool's data stays.</li>
     <li><strong><code class="code">&lt;tool&gt; upgrade [--check | --back | --retry]</code></strong> —
       <code class="code">hotswap::upgrade(tool, &amp;manifest, &amp;args)</code>, its return the

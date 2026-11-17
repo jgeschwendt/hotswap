@@ -23,7 +23,7 @@ fn main() {
         "bare": {"repo": "x/bare"},
         "gone": {"bin": "g", "repo": "x/g", "smoke": [["absent"]]},
         "m": {"repo": "x/m", "setup": ["m", "setup"], "signer": "ps1_m", "smoke": [["chk", "m"]]},
-        "slow": {"repo": "x/slow", "smoke": [["sh", "-c", "sleep 3 & echo up"], ["sh", "-c", "(sleep 2; touch ~/m) & sleep 3"]], "timeout": 1},
+        "slow": {"fetch_timeout": 1, "repo": "x/slow", "smoke": [["sh", "-c", "sleep 3 & echo up"], ["sh", "-c", "(sleep 2; touch ~/m) & sleep 3"]], "timeout": 1},
         "t": {"agents": ["dev.gigantic.t.upgrade", "dev.gigantic.t"], "drain": [["t", "drain"]], "repo": "x/t", "setup": ["t", "setup"], "signer": "ps1_t", "smoke": [["t", "version"], ["chk", "x"]]},
     });
     let given = env::var("MANIFEST")
@@ -37,7 +37,7 @@ fn main() {
     let known = given.is_some() || m.get(&tool).is_some();
     match tool.as_str() {
         "forget" => {
-            if let Err(e) = hotswap::forget("t", &of("t")) {
+            if let Err(e) = hotswap::forget("t") {
                 eprintln!("{e}");
                 exit(2)
             }
@@ -118,15 +118,34 @@ fn real() {
     };
     let state =
         || fs::read_to_string(p.join(".local/state/hotswap/grove.json")).unwrap_or_default();
-    // a first install of two tools at once: packslip bootstrapped by its pinned sha256 under two
-    // temp names, the latest of each relocated into the layout and run from there; packslip's
-    // exports stay off ~/.local/bin
+    // each tool installed alone, then both at once: packslip bootstrapped by its pinned sha256
+    // under two temp names, the latest of each relocated into the layout and run from there, each
+    // tool's packslip dirs its own, so neither waits on the other; packslip's exports stay off
+    // ~/.local/bin
     let routines = json!({"bin": "routine", "repo": "jgeschwendt/routines", "signer": "ps1_t5o72jatmrlk56zmnxvdyjrvry"});
-    thread::scope(|s| {
-        let r = s.spawn(|| tool("routines", routines, &["setup"]).0);
-        assert_eq!(grove("true", signer, &["setup"]).0, 0);
-        assert_eq!(r.join().unwrap(), 0);
+    let unmade = || {
+        for d in [".local/share/hotswap", ".local/bin", ".local/state"] {
+            fs::remove_dir_all(p.join(d)).ok();
+        }
+    };
+    let timed = |f: &dyn Fn() -> i32| {
+        let started = Instant::now();
+        assert_eq!(f(), 0);
+        started.elapsed()
+    };
+    let solo_routines = timed(&|| tool("routines", routines.clone(), &["setup"]).0);
+    unmade();
+    let solo_grove = timed(&|| grove("true", signer, &["setup"]).0);
+    unmade();
+    let both = timed(&|| {
+        thread::scope(|s| {
+            let r = s.spawn(|| tool("routines", routines.clone(), &["setup"]).0);
+            grove("true", signer, &["setup"]).0 + r.join().unwrap()
+        })
     });
+    println!(
+        "solo routines {solo_routines:.1?}, solo grove {solo_grove:.1?}, both at once {both:.1?}"
+    );
     let latest = current();
     assert_eq!(version(), format!("grove {latest}"));
     let local = fs::read_dir(p.join(".local/bin"))
@@ -236,11 +255,15 @@ fn unpid(s: &str) -> String {
 // that logs its argv and prints `<name>.<verb>.out`, else `<name>.out`, else `<verb> out`;
 // `<name>.code`, `<name>.<verb>.code` or `<name>@<active version>.code` makes it exit non-zero, and
 // `quiet` silences its stderr. A call from the reload waiter logs to `waiter.log`. launchctl's
-// `print` fails between a `bootout` and the next `bootstrap`, and a one-shot `once` fails a
-// bootstrap. curl's download writes the packslip stub, or `garbage` when that exists; `shasum` and
+// `print` fails between a `bootout` and the next good `bootstrap`, and a one-shot `once` fails a
+// bootstrap. curl models GitHub's redirect: `releases/latest` lands on `…/releases/tag/v<tag>`, or
+// on `…/releases` with no `tag`; a repo renamed per `renamed` (`old new`) first answers a 301 to
+// the new name's `releases/latest`, which only `-L` follows; its download writes the
+// packslip stub, or `garbage` when that exists; `shasum` and
 // `sha256sum` answer `sum` for a file carrying the stub's marker. The packslip stub unpacks the tool
 // stub as version `next`, with `bin/<bin>` when the bin is not `t`, or prints nothing
-// (`packslip.silent`), exports nothing (`packslip.nobin`) or dies by SIGKILL (`packslip.kill`);
+// (`packslip.silent`), exports nothing (`packslip.nobin`), dies by SIGKILL (`packslip.kill`) or
+// hangs with a child that would touch `hung` (`packslip.hang`);
 // the tool stub logs `<bin>@<its version>`, so a log shows which version each step ran, and a
 // one-shot `crash.<version>` makes its `setup` SIGKILL its caller. `old/t` leads PATH, as a shim
 // leaves the running install's bin dir: a step that runs it fails the exact log match. The temp
@@ -251,7 +274,7 @@ fn suite() {
     let (bin, old, root) = (p.join("bin"), p.join("old"), p.join(".local/share/hotswap"));
     let ts = root.join("t");
     let stub = format!(
-        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -o command= -p $PPID)\" in *bootout*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || echo 0)\n",
+        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -ww -o command= -p $PPID)\" in *bootout*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\nif [ \"$n\" = curl ] && [ ! -e '{p}/curl.code' ]; then case \"$*\" in *releases/latest) for u; do :; done; r=${{u#https://github.com/}}; r=${{r%/releases/latest}}; [ \"$(cut -d' ' -f1 '{p}/renamed' 2>/dev/null)\" = \"$r\" ] && {{ r=$(cut -d' ' -f2 '{p}/renamed'); case \"$*\" in *-fsSIL*) ;; *) printf 'https://github.com/%s/releases/latest' \"$r\"; exit 0;; esac; }}; t=$(cat '{p}/tag' 2>/dev/null); if [ -n \"$t\" ]; then printf 'https://github.com/%s/releases/tag/v%s' \"$r\" \"$t\"; else printf 'https://github.com/%s/releases' \"$r\"; fi; exit 0;; esac; fi\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && [ ! -e '{p}/launchctl.bootstrap.code' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || echo 0)\n",
         t = ts.display(),
         p = p.display()
     );
@@ -264,7 +287,7 @@ fn suite() {
         p.display()
     );
     let packslip = format!(
-        "#!/bin/sh\n# packslip-stub\necho \"packslip $* state=$XDG_STATE_HOME\" >> '{0}/log'\n[ -e '{0}/packslip.code' ] && printf 'Error: \\n   0: \\033[91mno release\\033[0m\\n\\nLocation:\\n' >&2 && exit 1\n[ -e '{0}/packslip.kill' ] && kill -9 $$\n[ -e '{0}/packslip.silent' ] && exit 0\nn=${{2##*/}}; rel=$n; [ \"$n\" = t ] || [ \"$n\" = m ] || rel=bin/$n\nmkdir -p \"$(dirname \"$6/$rel\")\" && cp '{0}/tool.stub' \"$6/$rel\"\nif [ -e '{0}/packslip.nobin' ]; then rm -f \"$8/$n\"; else ln -sf \"$(cd \"$6\" && pwd -P)/$rel\" \"$8/$n\"; fi\necho \"Installed $2 $(cat '{0}/next') at $6\"\n",
+        "#!/bin/sh\n# packslip-stub\necho \"packslip $* state=$XDG_STATE_HOME\" >> '{0}/log'\n[ -e '{0}/packslip.code' ] && printf 'Error: \\n   0: \\033[91mno release\\033[0m\\n\\nLocation:\\n' >&2 && exit 1\n[ -e '{0}/packslip.kill' ] && kill -9 $$\n[ -e '{0}/packslip.hang' ] && {{ (sleep 2; touch '{0}/hung') & sleep 30; }}\n[ -e '{0}/packslip.silent' ] && exit 0\nn=${{2##*/}}; rel=$n; [ \"$n\" = t ] || [ \"$n\" = m ] || rel=bin/$n\nmkdir -p \"$(dirname \"$6/$rel\")\" && cp '{0}/tool.stub' \"$6/$rel\"\nif [ -e '{0}/packslip.nobin' ]; then rm -f \"$8/$n\"; else ln -sf \"$(cd \"$6\" && pwd -P)/$rel\" \"$8/$n\"; fi\necho \"Installed $2 $(cat '{0}/next') at $6\"\n",
         p.display()
     );
     let exe = |path: &Path, body: &str| {
@@ -287,12 +310,7 @@ fn suite() {
     let put_file = |name: &str, body: &str| fs::write(p.join(name), body).unwrap();
     let code = |name: &str| put_file(name, "3");
     let rm = |name: &str| fs::remove_file(p.join(name)).unwrap();
-    let tag = |v: &str| {
-        put_file(
-            "curl.out",
-            &format!("https://github.com/x/t/releases/tag/v{v}"),
-        );
-    };
+    let tag = |v: &str| put_file("tag", v);
     put_file("uname.out", "Darwin arm64\n");
     let sum = "2b21dc68d54c23a56123f9f9d7402a8b9cfb1e6950c5d4966730ec5cee20146b";
     put_file("sum", sum);
@@ -325,6 +343,11 @@ fn suite() {
         )
     };
     let run = |args: &[&str]| go("t", args, &[]);
+    // the agent's own tick: launchd names its job in XPC_SERVICE_NAME
+    let tick = |t: &str| {
+        let label = format!("dev.gigantic.{t}.upgrade");
+        go(t, &[], &[("XPC_SERVICE_NAME", &label)])
+    };
     let state_dir = p.join(".local/state/hotswap");
     let rec = |tool: &str| {
         serde_json::from_slice::<Value>(&fs::read(state_dir.join(format!("{tool}.json"))).unwrap())
@@ -377,7 +400,7 @@ fn suite() {
     let t_latest = latest("x/t");
     let pk = |tool: &str, repo: &str, pin: &str| {
         format!(
-            "packslip install github.com/{repo} --pin {pin} --install-dir ~/.local/share/hotswap/stage/{tool} --bin-dir ~/.local/share/hotswap/packslip/bin state=~/.local/share/hotswap/packslip/state\n"
+            "packslip install github.com/{repo} --pin {pin} --install-dir ~/.local/share/hotswap/packslip/{tool}/stage --bin-dir ~/.local/share/hotswap/packslip/{tool}/bin state=~/.local/share/hotswap/packslip/{tool}/state\n"
         )
     };
     let uname = "uname -sm\n";
@@ -407,10 +430,11 @@ fn suite() {
     assert_eq!(go("t", &["setup"], &no_home), "2\nt: HOME unset\n");
     assert_eq!(go("install", &[], &no_home), "2\nt: HOME unset\n");
     assert_eq!(go("forget", &[], &no_home), "2\nHOME unset\n");
-    assert_eq!(
-        run(&["--check"]),
-        "2\nt: no version under ~/.local/share/hotswap/t; run t setup\n"
-    );
+    // a binary run from a checkout, with no layout and not from mise, touches nothing
+    let none = "2\nt: no version under ~/.local/share/hotswap/t; run t setup\n";
+    assert_eq!(run(&["--check"]), none);
+    assert_eq!(run(&[]), none);
+    assert!(!root.exists() && !p.join(".local/bin").exists());
 
     // the plist runs the link on a PATH without mise
     let home = p
@@ -529,16 +553,16 @@ fn suite() {
         rm(flag);
     }
     // a stage holding a dir its owner cannot list goes; one whose parent is read-only is named
-    let staged = root.join("stage/t");
+    let (own, staged) = (root.join("packslip/t"), root.join("packslip/t/stage"));
     fs::create_dir_all(staged.join("x")).unwrap();
-    fs::set_permissions(root.join("stage"), fs::Permissions::from_mode(0o555)).unwrap();
+    fs::set_permissions(&own, fs::Permissions::from_mode(0o555)).unwrap();
     assert_eq!(
         go("install", &[], &[]),
         format!(
-            "2\nt: ~/.local/share/hotswap/stage/t: Permission denied (os error 13)\n{uname}{checked}"
+            "2\nt: ~/.local/share/hotswap/packslip/t/stage: Permission denied (os error 13)\n{uname}{checked}"
         )
     );
-    fs::set_permissions(root.join("stage"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&own, fs::Permissions::from_mode(0o755)).unwrap();
     fs::create_dir_all(staged.join("x")).unwrap();
     fs::set_permissions(staged.join("x"), fs::Permissions::from_mode(0o000)).unwrap();
     fs::write(&ps, "garbage").unwrap();
@@ -562,6 +586,24 @@ fn suite() {
     );
     rm("t.setup.code");
     assert_eq!(run(&["setup"]), format!("0\n~/.local/bin/t\n{t_print}"));
+    // a `current` whose version went is repaired by the next upgrade even off mise; the repair's
+    // failed install leaves no stage
+    fs::rename(ts.join("2"), p.join("t2")).unwrap();
+    code("packslip.code");
+    assert_eq!(
+        run(&[]),
+        format!("2\nt: packslip install failed: no release\n{t_fetch}")
+    );
+    assert!(!staged.exists());
+    rm("packslip.code");
+    assert_eq!(
+        run(&[]),
+        format!(
+            "2\nt: https://github.com/x/t/releases/latest names no release\n{t_fetch}{t_print}{t_latest}"
+        )
+    );
+    assert_eq!(versions(&ts), "2*");
+    fs::remove_dir_all(p.join("t2")).unwrap();
 
     // the latest check failing, then naming no release: nothing tried; a renamed repo's redirect
     // lands on its tag all the same
@@ -575,7 +617,9 @@ fn suite() {
         run(&[]),
         format!("2\nt: https://github.com/x/t/releases/latest names no release\n{t_latest}")
     );
-    put_file("curl.out", "https://github.com/x/t-renamed/releases/tag/v2");
+    // the old repo's URL redirects to the renamed one's tag
+    put_file("renamed", "x/t x/t-renamed");
+    tag("2");
     assert_eq!(run(&["--back"]), "2\nt: no previous version\n");
     let plan = swap("2", "2")
         .trim_end()
@@ -640,12 +684,14 @@ fn suite() {
         run(&["--check"]),
         format!("0\nt: 3 → 4\n  {plan}\n{t_latest}")
     );
-    // packslip skips a withdrawn 4 and chooses 3: nothing newer, nothing kept, and while the
-    // redirect still says 4 no tick installs again
+    // packslip skips a withdrawn 4 and chooses 3: nothing newer, nothing kept, and within the
+    // hour the agent's tick spends no install on it, as --check says; a run by hand does
     assert_eq!(run(&[]), format!("0\nt 3: up to date\n{t_latest}{t_fetch}"));
     assert_eq!(versions(&ts), "2 3*");
-    assert!(!root.join("stage/t").exists());
-    assert_eq!(run(&[]), format!("0\nt 3: up to date\n{t_latest}"));
+    assert!(!staged.exists());
+    let pending = format!("0\nt 3: up to date; 4 pending verification\n{t_latest}");
+    assert_eq!(tick("t"), pending);
+    assert_eq!(run(&["--check"]), pending);
     assert_eq!(
         run(&["--back"]),
         format!("0\nt 2: green, 2 smoke probes\n{}", steps("2"))
@@ -658,7 +704,7 @@ fn suite() {
     put("1");
     code("chk@2.code");
     let rollback = steps("1");
-    fs::create_dir(state_dir.join("t.tmp")).unwrap();
+    fs::create_dir(state_dir.join("t.json.tmp")).unwrap();
     let unsaved = "t: ~/.local/state/hotswap/t.json: Is a directory (os error 21)";
     assert_eq!(
         run(&[]),
@@ -668,7 +714,7 @@ fn suite() {
         )
     );
     assert_eq!(versions(&ts), "1* 2 3");
-    fs::remove_dir(state_dir.join("t.tmp")).unwrap();
+    fs::remove_dir(state_dir.join("t.json.tmp")).unwrap();
     repoint("2");
     // red with a previous version: roll back with no network, keeping the record's previous
     assert_eq!(
@@ -693,8 +739,8 @@ fn suite() {
     );
     // a withdrawn latest whose stand-in went red is held too, after one install to learn it
     tag("9");
-    assert_eq!(run(&[]), format!("1\n{}\n{t_latest}{t_fetch}", wait("2")));
-    assert_eq!(run(&[]), format!("1\n{}\n{t_latest}", wait("2")));
+    assert_eq!(tick("t"), format!("1\n{}\n{t_latest}{t_fetch}", wait("2")));
+    assert_eq!(tick("t"), format!("1\n{}\n{t_latest}", wait("2")));
     // a newer release goes through
     tag("3");
     put_file("next", "3");
@@ -807,7 +853,19 @@ fn suite() {
             format!("0\n~/.local/bin/{bin}\n{}{}", fetch(t, repo, ""), print(t))
         );
     };
+    // a packslip that hangs is killed with its group at the deadline, leaving no stage; each tool
+    // has its own packslip dirs, so none waits on another's lock
     put_file("next", "2");
+    put_file("packslip.hang", "");
+    assert_eq!(
+        go("slow", &["setup"], &[]),
+        format!(
+            "2\nslow: packslip install failed: timed out after 1s\n{}",
+            fetch("slow", "x/slow", "")
+        )
+    );
+    assert!(!root.join("packslip/slow/stage").exists());
+    rm("packslip.hang");
     setup("slow", "x/slow", "slow");
     let late = "sh -c (sleep 2; touch ~/m) & sleep 3";
     assert_eq!(
@@ -822,7 +880,7 @@ fn suite() {
         json!([{"code": 0, "output": "output held open past 1s", "probe": "sh -c sleep 3 & echo up"}, {"code": -1, "output": "timed out after 1s", "probe": late}])
     );
     thread::sleep(Duration::from_secs(2));
-    assert!(!p.join("m").exists());
+    assert!(!p.join("m").exists() && !p.join("hung").exists());
 
     // a missing command is a red probe, and a release keeping its binary deeper gets a link at its
     // top; an unwritable lock or record exits 2
@@ -840,8 +898,51 @@ fn suite() {
     );
     assert_eq!(rec("gone")["smoke"][0]["code"], -1);
     setup("bare", "x/bare", "bare");
+    // the publish window: release 3 is public before its signed bundle, so packslip chooses 2,
+    // the current one; within the hour the agent's tick trusts that and --check agrees, a run by
+    // hand checks again, and once the hint is an hour old the tick installs 3, now verifiable
+    let bare_hint = state_dir.join("bare.latest");
+    tag("3");
+    let bare_up =
+        |more: &str, log: &str| format!("0\nbare 2: up to date{more}\n{}{log}", latest("x/bare"));
+    assert_eq!(
+        tick("bare"),
+        format!(
+            "0\nbare 2: green, 0 smoke probes\n{}{}",
+            latest("x/bare"),
+            fetch("bare", "x/bare", "")
+        )
+    );
+    assert_eq!(fs::read_to_string(&bare_hint).unwrap(), "3 2");
+    assert_eq!(tick("bare"), bare_up("; 3 pending verification", ""));
+    assert_eq!(
+        go("bare", &["--check"], &[]),
+        bare_up("; 3 pending verification", "")
+    );
+    assert_eq!(
+        go("bare", &[], &[]),
+        bare_up("", &fetch("bare", "x/bare", ""))
+    );
+    let hour = Duration::from_secs(3601);
+    let age = |h: &Path| {
+        let f = File::options().write(true).open(h).unwrap();
+        f.set_modified(std::time::SystemTime::now() - hour).unwrap();
+    };
+    age(&bare_hint);
+    put_file("next", "3");
+    assert_eq!(
+        tick("bare"),
+        format!(
+            "0\nbare 3: green, 0 smoke probes\n{}{}",
+            latest("x/bare"),
+            fetch("bare", "x/bare", "")
+        )
+    );
+    tag("1");
     let bare = "bare: ~/.local/state/hotswap/bare.";
-    for f in ["bare.lock", "bare.tmp"] {
+    fs::remove_file(state_dir.join("bare.lock")).unwrap();
+    fs::remove_file(state_dir.join("bare.json")).unwrap();
+    for f in ["bare.lock", "bare.json.tmp"] {
         fs::create_dir(state_dir.join(f)).unwrap();
         let o = go("bare", &[], &[]);
         assert!(o.starts_with("2\n") && o.contains(bare), "{o}");
@@ -850,7 +951,7 @@ fn suite() {
 
     // forget drops what is the tool's — record, hint, lock, versions, stage, its packslip export —
     // and leaves the shared packslip, absent or not
-    let export = root.join("packslip/bin/t");
+    let export = root.join("packslip/t/bin/t");
     assert!(state_dir.join("t.latest").exists() && export.symlink_metadata().is_ok());
     for _ in 0..2 {
         assert_eq!(go("forget", &[], &[]), "0\n");
@@ -858,7 +959,8 @@ fn suite() {
     for f in ["t.json", "t.latest", "t.lock"] {
         assert!(!state_dir.join(f).exists());
     }
-    assert!(!ts.exists() && export.symlink_metadata().is_err() && ps.exists());
+    assert!(!ts.exists() && !root.join("packslip/t").exists() && ps.exists());
+    assert!(root.join("packslip/slow").is_dir());
 
     migration(p, &exe, &launch, &norm);
 }
@@ -983,11 +1085,17 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
 
     // green: the new release's setup, run through the shim inside the old tick, moves the host —
     // XDG_DATA_HOME finds mise and moves nothing else — and the waiter reloads the agent from the
-    // rewritten plist, its first bootstrap failing in launchd's window, retried
+    // rewritten plist, its first bootstrap failing in launchd's window, retried; a pid file left by
+    // a waiter killed at logout, its pid now another process's, does not stop it
     on_mise();
     put_file("once", "");
     put_file("active", "2");
+    let mut other = Command::new("sleep").arg("30").spawn().unwrap();
+    let reload_pid = p.join(".local/state/hotswap/m.reload");
+    fs::write(&reload_pid, other.id().to_string()).unwrap();
     assert_eq!(by_shim(&["setup"], &xdg_env), format!("0\n{mm}"));
+    other.kill().unwrap();
+    other.wait().unwrap();
     let (log, outcome) = waited(1);
     assert_eq!(
         log,
@@ -1001,6 +1109,31 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
     assert_eq!(fs::read_to_string(&agent).unwrap(), plist);
     assert!(installs.join("2/m").exists() && installs.join("1/m").exists());
+    // every bootstrap failing leaves the agent unloaded and says so; the next setup loads it
+    let from_layout = |args: &[&str]| launch(&mut Command::new(ms.join("2/m")), args, &[]);
+    loaded(&shim, "not running");
+    put_file("launchctl.bootstrap.code", "5");
+    assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
+    let (_, outcome) = waited(2);
+    let failed = "hotswap: gui/$UID/dev.gigantic.m.upgrade not reloaded from ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist after 5 tries: bootstrap out\n";
+    assert_eq!(outcome, format!("{reloaded}{failed}"));
+    assert_eq!(fs::read_to_string(&reload_pid).unwrap(), "unloaded\n");
+    let boot = "launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist\n";
+    assert_eq!(
+        from_layout(&["setup"]),
+        format!(
+            "2\nm: launchctl bootstrap ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist: bootstrap err\n{print}\n{boot}"
+        )
+    );
+    fs::remove_file(p.join("launchctl.bootstrap.code")).unwrap();
+    assert_eq!(
+        from_layout(&["setup"]),
+        format!(
+            "0\n{mm}launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.m.upgrade.plist\n"
+        )
+    );
+    assert!(!reload_pid.exists());
+    fs::write(&agent_log, "").unwrap();
     // the next tick, the agent on the link: no mise, nothing reloads
     loaded(&link, "not running");
     let tick = launch(&mut Command::new(&link), &["upgrade"], &[]);
