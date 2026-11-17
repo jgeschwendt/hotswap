@@ -736,11 +736,10 @@ fn suite() {
     loaded(&shim);
     let from = |x: &Path| launch(Command::new(x).arg0("t"), &["setup"], &[]);
     // a version mise holds that cannot be read stops the move, naming it
-    fs::create_dir(installs.join("0")).unwrap();
-    fs::set_permissions(installs.join("0"), fs::Permissions::from_mode(0o000)).unwrap();
+    exe(&installs.join("0/t"), "");
+    fs::set_permissions(installs.join("0/t"), fs::Permissions::from_mode(0o000)).unwrap();
     assert!(from(&two).starts_with("2\nt: cp: "));
-    fs::set_permissions(installs.join("0"), fs::Permissions::from_mode(0o755)).unwrap();
-    fs::remove_dir(installs.join("0")).unwrap();
+    fs::remove_dir_all(installs.join("0")).unwrap();
     let o = (Command::new(&two)
         .arg0("t")
         .arg("setup")
@@ -751,7 +750,7 @@ fn suite() {
     .output()
     .unwrap();
     assert_eq!(
-        String::from_utf8_lossy(&o.stdout),
+        String::from_utf8_lossy(&[o.stdout, o.stderr].concat()),
         format!("{}\n", p.join(".local/bin/t").display())
     );
     let reload = "launchctl bootout gui/$UID/dev.gigantic.t.upgrade\nlaunchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.t.upgrade.plist\n";
