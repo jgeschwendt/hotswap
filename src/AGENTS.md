@@ -2,7 +2,7 @@
 
 ```stele
 kind: container
-purpose: crate source — `lib.rs` is the whole crate — `Manifest`; `upgrade` — mise lookup, red hold, bump, lock, drain → setup → kickstart → smoke, rollback, the record; `forget`; `agent_plist`; `shims`
+purpose: crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise), `install`, `upgrade`, `forget`, `agent_plist`, `root`
 ```
 
 <!-- @stele --><!-- @end -->

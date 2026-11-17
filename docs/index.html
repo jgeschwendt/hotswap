@@ -42,9 +42,9 @@
 <header class="stack">
   <p class="eyebrow">the swap moment for the gigantic primitives</p>
   <p class="lead docs-lead">Zero-downtime upgrades—<code class="code">hotswap</code> moves a running
-    tool to its next release and back, from inside the tool. mise and packslip release, verify,
-    install and keep versions side by side; hotswap owns the moment between: drain, swap, smoke,
-    then settle or roll back. One crate inside each tool, no daemon, no download code.</p>
+    tool to its next release and back, from inside the tool. packslip verifies and unpacks a
+    release; hotswap keeps the versions and owns the moment between: drain, swap, smoke, then
+    settle or roll back. One crate inside each tool, no daemon; a consumer needs no mise.</p>
   <nav class="row docs-toc" aria-label="sections">
     <a class="pill" href="#why">why</a>
     <a class="pill" href="#release">release</a>
@@ -66,10 +66,9 @@
     primitives. bifrost, the desktop app, plugs them into one UI the way mise plugs in runtimes:
     install one and its UI appears — a routines tab, sandman's report page. A remote Mac runs the
     night shift and needs the releases the dev box gets.</p>
-  <p>jdx tooling first. <a class="link" href="https://packslip.dev">packslip</a> — "a
-    vendor-neutral signed release manifest" — and mise's <code class="code">packslip:</code>
-    backend cover release, discovery, verification, install, upgrade and side-by-side versions.
-    What they leave is the swap on a host where the tool is running: hotswap.</p>
+  <p>jdx tooling first: jdx's standalone <a class="link" href="https://packslip.dev">packslip</a>
+    CLI — "a vendor-neutral signed release manifest" — verifies and unpacks a release. It keeps no
+    versions side by side and swaps nothing on a host where the tool is running: hotswap.</p>
 </section>
 
 <!-- ※ release -->
@@ -89,11 +88,13 @@
       for <code class="code">aarch64-apple-darwin</code> (routines adds
       <code class="code">x86_64-unknown-linux-gnu</code> for its CI tick), then runs
       <code class="code">jdx/packslip@v1</code> with <code class="code">artifacts</code>,
-      <code class="code">bin</code>, <code class="code">tag</code> and
+      <code class="code">bin</code> (the name an install exports: routines'
+      <code class="code">routine</code>), <code class="code">tag</code> and
       <code class="code">version</code>: it attests the archives and signs
       <code class="code">packslip.sigstore.json</code> with the workflow identity.</li>
-    <li><strong>private repos</strong> — mise's packslip backend fetches private assets through
-      the gh token (unverified 2026-11-01 · no private tool releases on packslip yet).</li>
+    <li><strong>private repos</strong> — whether <code class="code">packslip install</code>
+      fetches private assets is unverified (2026-11-01 · no private tool release on packslip
+      yet).</li>
     <li><strong>a signed release list</strong> — <code class="code">.well-known/packslip.json</code>
       may recommend or withdraw a version.</li>
   </ul>
@@ -109,53 +110,167 @@
 <section class="docs-section" id="install" data-component="install">
   <header>
     <h2 class="h2">Install and upgrade</h2>
-    <p class="docs-note">mise does the package work; the tool's <code class="code">upgrade</code>
-      verb — this crate, linked in — does the swap. Nobody installs hotswap.</p>
+    <p class="docs-note">A consumer of our tools needs no mise (owner, 2026-11-17, reversing
+      2026-10-30's "Components stay on the machine's mise"): packslip verifies and unpacks,
+      hotswap owns the versions, and a tool installs and upgrades with nothing else on the
+      machine. Trigger: on a Mac with mise 2026.8.5, which has no packslip backend, bifrost showed
+      <code class="code">mise ERROR [jgeschwendt/grove] plugin not installed</code> for grove,
+      routines and sandman.</p>
   </header>
+  <figure class="figure">
+    <div class="chart-frame" id="flow">
+      <svg width="1000" height="440" viewBox="0 0 1000 440" role="img" aria-label="one upgrade: ① latest from the releases/latest redirect; ② packslip installs the release it chooses, pinned to the tool's signer, into a stage moved to its version dir; ③ the drain runs, then the current symlink is repointed; ④ setup, kickstart and smoke; green: ⑤ the record, then ⑥ prune to current and previous; red: ⑦ current is repointed to the previous version with no network and ④ runs again, then ⑧ the record holds the failed release off. The layout: ~/.local/share/hotswap/grove/ holds 2026.11.2 and 2026.11.4 and the current link; packslip/1.11.4 is fetched by pinned sha256; packslip's state, config and data dirs sit beside it; ~/.local/bin/grove resolves through current; the record is ~/.local/state/hotswap/grove.json.">
+        <defs>
+          <marker id="flow-head" viewBox="0 0 8 8" refX="8" refY="4" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0L8,4L0,8Z" /></marker>
+        </defs>
+        <g transform="translate(0,24)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">① latest</text><text class="flow-note" x="12" y="46">releases/latest redirect:</text><text class="flow-note" x="12" y="64">the tag, no API quota</text></g>
+        <g transform="translate(224,24)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">② fetch</text><text class="flow-note" x="12" y="46">packslip install, signer</text><text class="flow-note" x="12" y="64">pinned; staged, moved</text><text class="flow-note" x="12" y="82">to &lt;tool&gt;/&lt;V&gt;/</text></g>
+        <g transform="translate(448,24)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">③ drain, repoint</text><text class="flow-note" x="12" y="46">a refusal swaps nothing;</text><text class="flow-note" x="12" y="64">then current → &lt;V&gt;,</text><text class="flow-note" x="12" y="82">renamed over</text></g>
+        <g transform="translate(448,164)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">④ swap</text><text class="flow-note" x="12" y="46">setup, kickstart,</text><text class="flow-note" x="12" y="64">smoke</text></g>
+        <g transform="translate(224,164)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">⑤ settle</text><text class="flow-note" x="12" y="46">record green</text></g>
+        <g transform="translate(0,164)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">⑥ prune</text><text class="flow-note" x="12" y="46">keep current and</text><text class="flow-note" x="12" y="64">previous, drop the rest</text></g>
+        <g transform="translate(448,304)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">⑦ roll back</text><text class="flow-note" x="12" y="46">current → previous,</text><text class="flow-note" x="12" y="64">no network; ④'s</text><text class="flow-note" x="12" y="82">steps again</text></g>
+        <g transform="translate(224,304)"><rect class="flow-box" width="176" height="96" rx="8" /><text class="flow-name" x="12" y="24">⑧ record red</text><text class="flow-note" x="12" y="46">the failed release</text><text class="flow-note" x="12" y="64">held off</text></g>
+        <g transform="translate(672,24)">
+          <rect class="flow-box" width="326" height="392" rx="8" />
+          <text class="flow-name" x="12" y="24">layout</text>
+          <text class="flow-path-name" x="12" y="48">~/.local/share/hotswap/</text>
+          <text class="flow-path-name" x="24" y="68">grove/</text>
+          <text class="flow-path-name" x="36" y="88">2026.11.2/</text><text class="flow-note" x="212" y="88">previous</text>
+          <text class="flow-path-name" x="36" y="108">2026.11.4/grove</text><text class="flow-note" x="212" y="108">verified, moved in</text>
+          <rect class="flow-box is-accent" x="28" y="114" width="288" height="22" rx="4" />
+          <text class="flow-path-name is-on-accent" x="36" y="129">current → 2026.11.4</text><text class="flow-note is-on-accent" x="212" y="129">active version</text>
+          <text class="flow-path-name" x="24" y="156">packslip/1.11.4/packslip</text>
+          <text class="flow-note" x="36" y="174">fetched by pinned sha256 when absent</text>
+          <text class="flow-path-name" x="24" y="198">packslip/{state,config,data}/</text>
+          <text class="flow-note" x="36" y="216">its trust state, ours alone</text>
+          <text class="flow-path-name" x="24" y="240">stage/grove/</text><text class="flow-note" x="212" y="240">mid-install only</text>
+          <text class="flow-path-name" x="12" y="272">~/.local/bin/grove → …/current/grove</text>
+          <text class="flow-note" x="12" y="290">what a shell and the agents run</text>
+          <text class="flow-name" x="12" y="326">the record</text>
+          <text class="flow-path-name" x="12" y="348">~/.local/state/hotswap/grove.json</text>
+          <text class="flow-note" x="12" y="366">read by hotswap and bifrost</text>
+        </g>
+        <g aria-hidden="true">
+          <path class="flow-path" marker-end="url(#flow-head)" d="M176,72H224" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M400,72H448" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M624,72H648V149H672" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M536,120V164" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M448,212H400" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M224,212H176" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M536,260V304" />
+          <path class="flow-path" marker-end="url(#flow-head)" d="M448,352H400" />
+        </g>
+        <text class="flow-time" x="200" y="62" text-anchor="middle">newer</text>
+        <text class="flow-time" x="424" y="204" text-anchor="middle">green</text>
+        <text class="flow-time" x="546" y="288">red</text>
+      </svg>
+    </div>
+    <figcaption>One upgrade and the layout it leaves, grove as the example; paths are the XDG
+      defaults.</figcaption>
+  </figure>
   <div class="table-wrap">
     <table data-table>
-      <thead><tr><th>command</th><th>what it does</th></tr></thead>
+      <thead><tr><th>job</th><th>how</th></tr></thead>
       <tbody>
-        <tr><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt;<br />&lt;tool&gt; setup</td><td>install — publisher verification, signer continuity
-          (<code class="code">packslip/pins.toml</code> in mise's state dir), artifact digest, then
-          the tool's install duties, its upgrade agent among them</td></tr>
-        <tr><td class="table-mono">&lt;tool&gt; upgrade</td><td><code class="code">mise upgrade --bump &lt;mise key&gt;</code>, then the swap; nothing new reads
-          <code class="code">&lt;tool&gt; &lt;v&gt;: up to date</code>, exit 0; a failed bump reads
-          <code class="code">&lt;tool&gt;: mise upgrade failed: &lt;mise's reason&gt;</code>, exit 1,
-          nothing swapped</td></tr>
-        <tr><td class="table-mono">&lt;tool&gt; upgrade --back</td><td>rollback through <code class="code">mise use -g &lt;mise key&gt;@&lt;previous&gt;</code>,
-          reachable until mise prunes the upgraded-from version after
-          <code class="code">upgrade.prune_after</code> (24 h default); an upgrade's own rollback
-          runs in-process, unaffected</td></tr>
-        <tr><td class="table-mono">&lt;tool&gt; setup --remove<br />mise unuse -g &lt;mise key&gt;</td><td>uninstall — agents booted out and the record forgotten, then the pin</td></tr>
+        <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it</td></tr>
+        <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code></td></tr>
+        <tr><td>latest</td><td><code class="code">curl -fsSI -w %{redirect_url} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>: only "anything newer than current?"; packslip chooses the version</td></tr>
+        <tr><td>fetch, verify</td><td class="table-mono">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/stage/&lt;tool&gt; --bin-dir &lt;root&gt;/packslip/bin</td></tr>
+        <tr><td>activate, roll back</td><td><code class="code">current</code> repointed: a fresh link renamed over it; no network</td></tr>
+        <tr><td>what runs the version</td><td><code class="code">~/.local/bin/&lt;bin&gt;</code> → <code class="code">&lt;root&gt;/&lt;tool&gt;/current/&lt;bin&gt;</code>: the agents' program and the head of every step's <code class="code">PATH</code>; runnable under <code class="code">env -i</code></td></tr>
+        <tr><td>trust state</td><td>packslip's, under <code class="code">&lt;root&gt;/packslip/</code></td></tr>
+        <tr><td>prune</td><td>after a green swap, current and previous kept</td></tr>
+        <tr><td>uninstall</td><td><code class="code">&lt;tool&gt; setup --remove</code>, whose <code class="code">hotswap::forget</code> also deletes <code class="code">&lt;root&gt;/&lt;tool&gt;</code></td></tr>
       </tbody>
     </table>
   </div>
+  <p class="docs-note"><code class="code">&lt;root&gt;</code> is <code class="code">$XDG_DATA_HOME/hotswap</code>,
+    else <code class="code">~/.local/share/hotswap</code> (<code class="code">hotswap::root()</code>):
+    tool-agnostic, so bifrost and a tool agree on it.</p>
   <ul class="stack claims" role="list">
-    <li><strong>no release-age hold</strong> — mise hides a release from
-      <code class="code">latest</code> for 24 h by default, which would hide it from the upgrade
-      tick and bifrost's rows; the global <code class="code">minimum_release_age_excludes</code>
-      lists each tool's full backend ID (<code class="code">packslip:jgeschwendt/sandman</code>, …;
-      a path glob such as <code class="code">packslip:jgeschwendt/*</code> matches nothing,
-      verified 2026-10-31), carried by the profile repo's
-      <code class="code">~/.config/mise/config.toml</code>.</li>
-    <li><strong>discovery lag</strong> — mise resolves releases through
-      <code class="code">mise-versions.jdx.dev</code> (<code class="code">s-maxage=600</code>) and
-      its own HTTP cache, so a release can take ten minutes to appear;
-      <code class="code">mise cache clear</code> drops the local copy.</li>
+    <li><strong>packslip, as probed</strong> (v1.11.4, macOS arm64, 2026-11-17) — verifies
+      <code class="code">packslip.sigstore.json</code> (a Sigstore bundle over an in-toto
+      statement, predicate <code class="code">https://packslip.dev/release/v1</code>), size and
+      sha256, then unpacks: ≈3 s for grove. Without <code class="code">--install-dir</code> it
+      keeps one tree per project, so hotswap installs into a stage and moves the tree to
+      <code class="code">&lt;root&gt;/&lt;tool&gt;/&lt;V&gt;/</code>, where it runs. No list, latest, upgrade, uninstall or
+      JSON; <code class="code">install</code> always refetches (≈4 GitHub API calls and the
+      archive), never retries, and fails hard on a 403 or a network error. It reads
+      <code class="code">XDG_STATE_HOME</code>, <code class="code">XDG_CONFIG_HOME</code> and
+      <code class="code">XDG_DATA_HOME</code> (not <code class="code">XDG_CACHE_HOME</code> or
+      <code class="code">TMPDIR</code>); hotswap points all three into
+      <code class="code">&lt;root&gt;/packslip/</code>, so the user's own packslip use cannot
+      change our trust state; an admin's <code class="code">/etc/packslip/pins.d</code> can only
+      narrow it. No minimum release age.</li>
+    <li><strong>packslip itself</strong> — pinned by a constant in the crate, its version and a
+      sha256 per platform from jdx's published install script (each checked by download,
+      2026-11-17); a hotswap change bumps it. Absent, hotswap fetches
+      <code class="code">https://packslip.dev/v1.11.4/packslip-v1.11.4-&lt;platform&gt;</code> with
+      curl, checks the sha256 with <code class="code">sha256sum</code>, and places it at
+      <code class="code">&lt;root&gt;/packslip/1.11.4/packslip</code>; never one found on PATH.
+      Platforms: darwin-arm64, linux-arm64, linux-x64. Intel Macs are unsupported: an install or
+      upgrade there says so in one line.</li>
+    <li><strong>the signer</strong> — each tool's manifest carries its
+      <code class="code">ps1_…</code> fingerprint and every install passes it as
+      <code class="code">--pin</code>; a release signed otherwise is refused (run 2026-11-17:
+      <code class="code">signer does not match constraint 0's signer fingerprints</code>). No
+      reliance on first-use memory.</li>
+    <li><strong>the version</strong> — packslip chooses it: the redirect only answers "anything
+      newer than current?" and keeps a tick off the API. On yes, <code class="code">packslip
+      install</code> runs without <code class="code">--version</code>, so a withdrawn release is
+      skipped; its <code class="code">Installed &lt;project&gt; &lt;V&gt; at …</code> line names V,
+      and a V not newer than current is discarded. The export goes to
+      <code class="code">&lt;root&gt;/packslip/bin</code>, never <code class="code">~/.local/bin</code>,
+      and names where the release keeps its binary: kept deeper, it gets a
+      <code class="code">&lt;V&gt;/&lt;bin&gt;</code> link.</li>
+    <li><strong>failures before the swap</strong> — a GitHub rate limit, a network failure or a
+      failed bootstrap during a tick prints one line and exits 2, leaving the active version and
+      the record as they were and holding nothing red; the next tick tries again. Only a release
+      that installed and then failed a step is red.</li>
+    <li><strong>migration</strong> — <code class="code">hotswap::ensure</code>, run from mise's
+      install of a version newer than the active one (or with none active), copies every version
+      in <code class="code">~/.local/share/mise/installs/&lt;key&gt;/</code> into the layout and
+      makes the running one current: no network, so no rate limit can fail it, and the bytes are
+      the ones mise verified. An unreadable version stops it, named, before anything is
+      repointed. It relinks <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the
+      loaded upgrade agent runs another program, rewrites its plist and reloads it from a
+      detached waiter once the agent's job ends. mise's dirs and the user's
+      <code class="code">packslip:jgeschwendt/&lt;tool&gt;</code> line are left alone: its copy
+      and shim go stale, a stale copy never moves the layout back, and removing the line is the
+      user's.</li>
+    <li><strong>the migration, in sequence</strong> — the old release's upgrade agent runs
+      through mise's shim; mise bumps, and the new release's <code class="code">setup</code> step,
+      through the shim too, runs <code class="code">ensure</code> from mise's install dir before
+      the old upgrade kickstarts and smokes. The reload waits out that run and loads the plist on
+      disk: <code class="code">~/.local/bin/&lt;bin&gt; upgrade</code> after a green, the shim
+      again if the old release rolled back and rewrote it.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
       rendered by <code class="code">hotswap::agent_plist(tool, bin)</code> and bootstrapped by
-      <code class="code">&lt;tool&gt; setup</code>: every 900 s
-      (<code class="code">StartInterval</code>), never at load (a load-time upgrade would race the
-      swap that ran setup), logging to <code class="code">~/Library/Logs/&lt;label&gt;.log</code>.
-      It runs <code class="code">&lt;mise data dir&gt;/shims/&lt;bin&gt; upgrade</code>; a shim
-      re-resolves the global version on every exec, so the agent follows the active version and
-      survives its own swap, which never kickstarts it. <code class="code">upgrade</code> hands
-      every step a <code class="code">PATH</code> led by the shims, so each step runs the version
-      mise just made active.</li>
-    <li><strong>other bumps</strong> — a daily <code class="code">mise upgrade --bump</code> may
-      move a tool first; the next tick swaps to it, since <code class="code">upgrade</code> acts on
-      any active version its record does not hold.</li>
+      <code class="code">&lt;tool&gt; setup</code>: <code class="code">~/.local/bin/&lt;bin&gt;
+      upgrade</code> every 900 s on a <code class="code">PATH</code> of
+      <code class="code">~/.local/bin</code> and the system dirs, never at load (a load-time
+      upgrade would race the swap that ran setup), logging to
+      <code class="code">~/Library/Logs/&lt;label&gt;.log</code>. The link resolves through
+      <code class="code">current</code> on every exec, so the agent survives its own swap, which
+      never kickstarts it.</li>
+  </ul>
+  <h3 class="h3" id="install-rejected">Rejected</h3>
+  <div class="table-wrap">
+    <table data-table>
+      <thead><tr><th>alternative</th><th>why not (measured 2026-11-16 → 17)</th></tr></thead>
+      <tbody>
+        <tr><td>a private mise</td><td>≈40 MB download, a 138 MB binary; its shims need mise's dirs, so a bare shell cannot run the command; releases arrive through jdx's version index, which lagged one on 2026-11-16</td></tr>
+        <tr><td>mise linked as a crate</td><td>its <code class="code">lib.rs</code>: the binary "is the only intended consumer; this is not a stable public API"; 128 direct dependencies</td></tr>
+        <tr><td>Sigstore verification in hotswap</td><td><code class="code">sigstore-verify</code> 0.16 with ring: 84 crates, +0.85 MB per tool against sandman's 1.4 MB; the trust root is baked into each tool, so a rotation strands its upgrade path; signer memory and no-downgrade would be ours to write</td></tr>
+        <tr><td>migration by a fresh fetch</td><td>it re-verifies, but runs inside the old release's swap: a rate limit there fails setup, rolls the host back onto mise and holds the new release red until the next one</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <h3 class="h3" id="install-open">Open questions</h3>
+  <ul class="stack claims" role="list">
+    <li><strong>bifrost's self-update</strong> — whether this mechanism replaces the 2026-10-30
+      plan of a private mise for the app layer (§ bifrost).</li>
   </ul>
 </section>
 
@@ -164,48 +279,47 @@
   <header>
     <h2 class="h2">Mechanism</h2>
     <p class="docs-note">One function, <code class="code">hotswap::upgrade</code>, inside the tool.
-      It finds the tool's mise key (the backend key ending in the tool's name) and active version
-      in <code class="code">mise ls --json</code>, run from <code class="code">/</code> so no
-      project pin hides the global one, and acts when that version differs from its record's; a
-      red record stays put until a new version or <code class="code">--back</code>. It speaks mise
-      only for <code class="code">ls --json</code>, <code class="code">latest</code>,
-      <code class="code">upgrade --bump</code> and <code class="code">use -g</code>.</p>
+      It reads the active version from <code class="code">current</code>, speaks curl for the
+      latest check and packslip only for <code class="code">install</code> (§ install), and acts
+      when the version to run differs from its record's; a red record stays put until a new
+      version or <code class="code">--back</code>.</p>
   </header>
-  <pre class="snippet">&lt;tool&gt; upgrade           <span class="snippet-note"># mise upgrade --bump, then drain, swap, smoke, settle or roll back</span>
-&lt;tool&gt; upgrade --check   <span class="snippet-note"># report what would happen; touch nothing</span>
-&lt;tool&gt; upgrade --back    <span class="snippet-note"># a deliberate rollback to the previous version</span>
+  <pre class="snippet">&lt;tool&gt; upgrade           <span class="snippet-note"># fetch the latest, then drain, swap, smoke, settle or roll back</span>
+&lt;tool&gt; upgrade --check   <span class="snippet-note"># report what would happen; fetch nothing, touch nothing</span>
+&lt;tool&gt; upgrade --back    <span class="snippet-note"># a deliberate rollback to the previous version, no network</span>
 &lt;tool&gt; upgrade --retry   <span class="snippet-note"># a plain upgrade past the red hold</span></pre>
   <ol class="steps">
-    <li><strong>Drain</strong> — run the manifest's drain commands (§ contract); a refusal aborts:
-      nothing swapped, nothing rolled back. A running process keeps its binary — mise installs by
-      unlink and create — so only new processes see the new version.</li>
-    <li><strong>Swap</strong> — <code class="code">&lt;tool&gt; setup</code>, then
-      <code class="code">launchctl kickstart -k</code> each manifest agent except the tool's
-      upgrade agent, whose kick would kill the running swap; setup first, since it bootstraps an
-      agent a release adds and kickstarting an unloaded label fails.</li>
+    <li><strong>Fetch</strong> — when the redirect names a release newer than current, packslip
+      installs the one it chooses into the layout (§ install); one already there is kept.</li>
+    <li><strong>Drain</strong> — the manifest's drain commands (§ contract), before
+      <code class="code">current</code> moves; a refusal aborts: nothing swapped, nothing rolled
+      back. A running process keeps its binary — a version never overwrites another's files —
+      so only new processes see the new version.</li>
+    <li><strong>Swap</strong> — <code class="code">current</code> repointed, then
+      <code class="code">&lt;tool&gt; setup</code>, then <code class="code">launchctl kickstart
+      -k</code> each manifest agent except the tool's upgrade agent, whose kick would kill the
+      running swap; setup first, since it bootstraps an agent a release adds and kickstarting an
+      unloaded label fails.</li>
     <li><strong>Smoke</strong> — the manifest's smoke commands, against the new processes.</li>
     <li><strong>Settle or roll back</strong> — green: record the swap in
-      <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code>. Red: record the version
-      red, so a crash from here on reads red; <code class="code">mise use -g &lt;mise key&gt;@&lt;previous&gt;</code>,
-      then setup, kickstart and smoke under the same manifest; exit 1 naming the failing probe. A
-      previous version mise no longer holds, or whose record is red, is never rolled back onto
-      unless it held (passed its own steps as a rollback target); the failed version then stays
-      current, red.</li>
+      <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code> and prune to current and
+      previous. Red: record the version red, so a crash from here on reads red; repoint to the
+      previous version, then setup, kickstart and smoke under the same manifest; exit 1 naming
+      the failing probe. A previous version no longer in the layout, or whose record is red, is
+      never rolled back onto unless it held (passed its own steps as a rollback target); the
+      failed version then stays current, red.</li>
   </ol>
   <ul class="stack claims" role="list">
     <li><strong>the red hold</strong> — the record's <code class="code">red</code> names the
       version a run failed on, rolled back from, or left by <code class="code">--back</code>.
-      Before bumping, <code class="code">upgrade</code> asks <code class="code">mise latest
-      &lt;key&gt;</code>; while latest is that version it prints
-      <code class="code">&lt;tool&gt;: &lt;v&gt; is red; waiting for a newer release</code> and exits
-      1 without touching mise (<code class="code">--check</code> shows it, exit 0). A newer
-      release or a failed <code class="code">mise latest</code> goes through, a green swap clears
-      it, <code class="code">--retry</code> passes it. Without it the agent's
-      <code class="code">--bump</code> would move a rollback's pin back onto the red release every
-      tick.</li>
+      While the redirect's latest is that version, <code class="code">upgrade</code> prints
+      <code class="code">&lt;tool&gt;: &lt;v&gt; is red; waiting for a newer release</code> and
+      exits 1 without fetching (<code class="code">--check</code> shows it, exit 0). A newer
+      release goes through, a green swap clears it, <code class="code">--retry</code> passes it.
+      Without it every tick would move back onto the red release.</li>
     <li><strong>the manifest is the running binary's</strong> — the upgrading version supplies
       agents, drain and smoke for the new version and the rollback; <code class="code">setup</code>,
-      run through the shim, is the new version's.</li>
+      resolved through <code class="code">~/.local/bin</code>, is the new version's.</li>
     <li><strong>the record</strong> — the last swap: <code class="code">at</code>,
       <code class="code">ok</code>, <code class="code">smoke</code> output, version and previous; a
       rollback's names the failing probe (and the rollback's own, if red too), keeps
@@ -213,8 +327,11 @@
       <code class="code">red</code>, and sets <code class="code">held</code> when the
       rolled-back-onto version passed its steps. A lock beside it keeps two upgrades of one tool
       apart.</li>
-    <li><strong>no version directory, no daemon</strong> — mise downloads, verifies and stores
-      versions; the upgrade agent, a person or bifrost decides when to call.</li>
+    <li><strong>exit codes</strong> — 0 green or settled, 1 red or refused by a drain or the
+      hold, 2 unable to try: no version in the layout, the lock held, a failed latest check,
+      bootstrap or install.</li>
+    <li><strong>no daemon</strong> — the upgrade agent, a person or bifrost decides when to
+      call.</li>
   </ul>
 </section>
 
@@ -227,51 +344,56 @@
   </header>
   <ul class="stack claims" role="list">
     <li><strong><code class="code">&lt;tool&gt; setup [--remove]</code></strong> — the idempotent
-      install duties, run by bifrost's install and after every swap: render the launchd templates
-      (carrying <code class="code">{{HOME}}</code>) and bootstrap the agents, the upgrade agent
-      from <code class="code">hotswap::agent_plist</code> among them; install routine docs into
+      install duties, run by <code class="code">hotswap::install</code> and after every swap:
+      first <code class="code">hotswap::ensure(tool, &amp;manifest)</code>, which returns
+      <code class="code">~/.local/bin/&lt;bin&gt;</code> for the agents to run (§ install); then
+      render the launchd templates and bootstrap the agents, the upgrade agent from
+      <code class="code">hotswap::agent_plist</code> among them; install routine docs into
       <code class="code">~/.routines</code>, leaving an edited copy alone; register MCP servers;
       print what it did. <code class="code">--remove</code> inverts it and calls
-      <code class="code">hotswap::forget(tool)</code> so a reinstall starts clean; the tool's data
-      stays.</li>
+      <code class="code">hotswap::forget(tool)</code>, which drops the record, the lock and
+      <code class="code">&lt;root&gt;/&lt;tool&gt;</code> so a reinstall starts clean; the tool's
+      data stays.</li>
     <li><strong><code class="code">&lt;tool&gt; upgrade [--check | --back | --retry]</code></strong> —
       <code class="code">hotswap::upgrade(tool, &amp;manifest, &amp;args)</code>, its return the
-      exit code: 0 green or settled, 1 red, 2 unable to try.</li>
-    <li><strong>three names, one identity</strong> — the tool name is the mise key's last segment
-      (<code class="code">packslip:jgeschwendt/routines</code>), the label stem
-      (<code class="code">dev.gigantic.routines.*</code>) and the record
-      (<code class="code">~/.local/state/hotswap/routines.json</code>). <code class="code">bin</code>
-      names the executable when it differs — routines ships <code class="code">routine</code> and
-      renders <code class="code">agent_plist("routines", "routine")</code>; empty, the tool name
-      stands in.</li>
-    <li><strong>the shims dir</strong> — <code class="code">hotswap::shims()</code>:
-      <code class="code">MISE_DATA_DIR</code>, else <code class="code">XDG_DATA_HOME/mise</code>,
-      else <code class="code">~/.local/share/mise</code>, then <code class="code">shims</code> — the
-      plist's lookup, for a setup that links <code class="code">~/.local/bin/&lt;bin&gt;</code> to
-      <code class="code">&lt;shims&gt;/&lt;bin&gt;</code>.</li>
+      exit code (§ mechanism).</li>
+    <li><strong>three names, one identity</strong> — the tool name is the label stem
+      (<code class="code">dev.gigantic.routines.*</code>), the layout dir
+      (<code class="code">&lt;root&gt;/routines/</code>) and the record
+      (<code class="code">~/.local/state/hotswap/routines.json</code>), and the manifest's
+      <code class="code">repo</code> its release's (<code class="code">jgeschwendt/routines</code>).
+      <code class="code">bin</code> names the executable when it differs — routines ships
+      <code class="code">routine</code> and renders
+      <code class="code">agent_plist("routines", "routine")</code>; empty, the tool name stands
+      in.</li>
   </ul>
   <div class="table-wrap">
     <table data-table>
-      <thead><tr><th>tool</th><th>latest</th><th>kickstarted</th><th>drain</th><th>smoke</th></tr></thead>
+      <thead><tr><th>tool</th><th>latest</th><th>signer</th><th>kickstarted</th><th>drain</th><th>smoke</th></tr></thead>
       <tbody>
-        <tr><td class="table-mono">bifrost</td><td>planned (§ bifrost)</td><td>—</td><td>quiet</td><td><code class="code">/health</code></td></tr>
-        <tr><td class="table-mono">grove</td><td class="table-mono">2026.11.1</td><td class="table-mono">dev.gigantic.grove</td><td><code class="code">grove off</code></td><td><code class="code">grove --version</code> · <code class="code">GET /api/health</code> (curl, retried while the server boots)</td></tr>
-        <tr><td class="table-mono">routines</td><td class="table-mono">2026.10.1</td><td class="table-mono">dev.gigantic.routines.due</td><td>no routine's lock held</td><td><code class="code">routine status</code></td></tr>
-        <tr><td class="table-mono">sandman</td><td class="table-mono">2026.10.1</td><td class="table-mono">dev.gigantic.sandman.report</td><td>none: a shift keeps its binary</td><td><code class="code">sandman version</code> · <code class="code">sandman shift status</code> (a report-page probe would move its read cursor)</td></tr>
+        <tr><td class="table-mono">bifrost</td><td>planned (§ bifrost)</td><td>—</td><td>—</td><td>quiet</td><td><code class="code">/health</code></td></tr>
+        <tr><td class="table-mono">grove</td><td class="table-mono">2026.11.4</td><td class="table-mono">ps1_rahbrmrvyrwx2q75yvkfebgfzy</td><td class="table-mono">dev.gigantic.grove</td><td><code class="code">grove off</code></td><td><code class="code">grove --version</code> · <code class="code">GET /api/health</code> (curl, retried while the server boots)</td></tr>
+        <tr><td class="table-mono">routines</td><td class="table-mono">2026.11.0</td><td class="table-mono">ps1_t5o72jatmrlk56zmnxvdyjrvry</td><td class="table-mono">dev.gigantic.routines.due</td><td>no routine's lock held</td><td><code class="code">routine status</code></td></tr>
+        <tr><td class="table-mono">sandman</td><td class="table-mono">2026.11.1</td><td class="table-mono">ps1_nensfiggtc7n6uctbniwf7q4am</td><td class="table-mono">dev.gigantic.sandman.report</td><td>none: a shift keeps its binary</td><td><code class="code">sandman version</code> · <code class="code">sandman shift status</code> (a report-page probe would move its read cursor)</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="docs-note">Latest releases observed 2026-11-01.</p>
+  <p class="docs-note">Latest releases and the fingerprints <code class="code">packslip install</code>
+    printed for them, observed 2026-11-17.</p>
   <h3 class="h3" id="contract-manifest">The manifest, in code</h3>
   <p class="docs-note">Every field may be empty; <code class="code">..Default::default()</code>
-    swaps with nothing to run.</p>
+    swaps with nothing to run, though an install needs <code class="code">repo</code> and
+    <code class="code">signer</code>.</p>
   <pre class="snippet">let m = hotswap::Manifest {
     agents: vec!["dev.gigantic.sandman.report".into()],  <span class="snippet-note">// kickstarted on swap</span>
+    repo: "jgeschwendt/sandman".into(),                   <span class="snippet-note">// its GitHub releases</span>
     setup: vec!["sandman".into(), "setup".into()],       <span class="snippet-note">// run after every swap</span>
+    signer: "ps1_nensfiggtc7n6uctbniwf7q4am".into(),      <span class="snippet-note">// every install pins it</span>
     smoke: vec![vec!["sandman".into(), "version".into()], vec!["sandman".into(), "shift".into(), "status".into()]],
     timeout: Some(120),  <span class="snippet-note">// seconds per step, the default; expiry kills the step's process group</span>
     ..Default::default() <span class="snippet-note">// no drain: a shift keeps the binary it started on</span>
 };
+let exe = hotswap::ensure("sandman", &amp;m)?;            <span class="snippet-note">// in setup: the path the agents run</span>
 std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
   <p class="docs-note">A step that exits while a background child holds its output is waited out
     to the deadline, then judged by its own exit code — detach daemons from stdout.</p>
@@ -281,32 +403,28 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
 <section class="docs-section" id="bifrost" data-component="bifrost">
   <header>
     <h2 class="h2">bifrost</h2>
-    <p class="docs-note">The Components tab drives the machine's mise and reads each tool's
-      record; hotswap is never a component.</p>
+    <p class="docs-note">The Components tab installs into hotswap's layout and reads each tool's
+      record; hotswap is never a component, and no tool needs bifrost.</p>
   </header>
   <div class="table-wrap">
     <table data-table>
-      <thead><tr><th>action</th><th>runs</th></tr></thead>
+      <thead><tr><th>action</th><th>today</th><th>next</th></tr></thead>
       <tbody>
-        <tr><td>components</td><td>grove, routines, sandman</td></tr>
-        <tr><td>install</td><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt;, then mise x &lt;spec&gt; -- &lt;tool&gt; setup</td></tr>
-        <tr><td>no mise</td><td><code class="code">~/.local/bin/mise</code> absent: the row says so and offers nothing; bifrost never installs mise for the machine (owner, 2026-10-30)</td></tr>
-        <tr><td>status</td><td><code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code> — version, ok, the failing step, the red version held off</td></tr>
-        <tr><td>tab shown</td><td>an active install in <code class="code">mise ls --json</code> — routines tab, sandman report page</td></tr>
-        <tr><td>upgrade</td><td class="table-mono">mise x &lt;spec&gt; -- &lt;tool&gt; upgrade</td></tr>
+        <tr><td>components</td><td colspan="2">grove, routines, sandman</td></tr>
+        <tr><td>install</td><td class="table-mono">mise use -g packslip:jgeschwendt/&lt;tool&gt;, then mise x &lt;spec&gt; -- &lt;tool&gt; setup</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, its manifest's <code class="code">repo</code>, <code class="code">bin</code>, <code class="code">signer</code> and <code class="code">setup</code> from bifrost's component table</td></tr>
+        <tr><td>no mise</td><td><code class="code">~/.local/bin/mise</code> absent: the row says so and offers nothing</td><td>nothing to say: install needs no mise</td></tr>
+        <tr><td>status</td><td colspan="2"><code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code> — version, ok, the failing step, the red version held off</td></tr>
+        <tr><td>tab shown</td><td>an active install in <code class="code">mise ls --json</code></td><td><code class="code">hotswap::root()</code>'s <code class="code">&lt;tool&gt;/current</code> resolves</td></tr>
+        <tr><td>upgrade</td><td class="table-mono">mise x &lt;spec&gt; -- &lt;tool&gt; upgrade</td><td class="table-mono">~/.local/bin/&lt;bin&gt; upgrade</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="docs-note plan-note-after">bifrost's own self-update, planned (owner, 2026-10-30): the
-    shell carries a private mise under its state dir (<code class="code">MISE_DATA_DIR</code>,
-    <code class="code">MISE_CONFIG_DIR</code>, <code class="code">MISE_STATE_DIR</code>,
-    <code class="code">MISE_CACHE_DIR</code> inside it), so the machine's mise is never touched;
-    the app layer becomes <code class="code">packslip:jgeschwendt/bifrost</code>, swapped by
-    <code class="code">hotswap::upgrade("bifrost", …)</code> from the update loop (quiet drain,
-    <code class="code">/health</code> smoke, no agent); the shell .app stays on the Tauri updater,
-    since mise cannot swap a running app bundle; Components stay on the machine's mise. The
-    runtime layer is a mise pin only if mise's erlang installs the prebuilt otp_builds on macOS
-    (unverified 2026-11-01 · not yet probed).</p>
+  <p class="docs-note plan-note-after">bifrost's own self-update, planned: the app layer becomes a
+    packslip release swapped by <code class="code">hotswap::upgrade("bifrost", …)</code> from the
+    update loop (quiet drain, <code class="code">/health</code> smoke, no agent); the shell .app
+    stays on the Tauri updater, since nothing here swaps a running app bundle. The 2026-10-30 plan
+    fetched the app and runtime layers through a private mise; whether this mechanism replaces it
+    is open (§ install).</p>
 </section>
 
 <!-- ※ non-goals -->
@@ -316,12 +434,10 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
   </header>
   <ul class="stack" role="list">
     <li data-non-goal="daemon">A daemon — callers decide when to swap.</li>
-    <li data-non-goal="download">Download or signature code of its own — mise and packslip.</li>
-    <li data-non-goal="package-manager">A package manager — that is mise.</li>
+    <li data-non-goal="download">Signature code of its own — packslip verifies.</li>
+    <li data-non-goal="package-manager">A package manager — no dependencies, no third-party tools; a tool's current and previous version, nothing more.</li>
     <li data-non-goal="release-format">A release format — that is packslip.</li>
     <li data-non-goal="signing">Signing beyond packslip's keyless sigstore, until the owner says otherwise.</li>
-    <li data-non-goal="third-party">Third-party tools — the gigantic primitives only.</li>
-    <li data-non-goal="versions">A version directory of its own — mise keeps versions side by side.</li>
   </ul>
 </section>
 
@@ -332,12 +448,17 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
     <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
   </header>
   <ol class="steps">
-    <li><strong>bifrost</strong> — its self-update on the crate (§ bifrost);
-      <code class="code">selfupdate.rs</code> and the <code class="code">bifrost-releases</code>
-      mirror retire.</li>
+    <li><strong>bifrost</strong> — Components installs by <code class="code">hotswap::install</code>
+      and drops its mise calls; its self-update stays open (§ install).</li>
+    <li><strong>grove and routines releases</strong> — each links the new crate: the manifest
+      gains <code class="code">repo</code> and <code class="code">signer</code>,
+      <code class="code">setup</code> opens with <code class="code">hotswap::ensure</code> and
+      runs its agents from the path it returns in place of mise's shim; its first
+      <code class="code">setup</code> migrates the host.</li>
+    <li><strong>sandman</strong> — rides its cutover.</li>
   </ol>
-  <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's first packslip
-    release.</p>
+  <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's self-update
+    (§ install); bifrost's first packslip release.</p>
 </section>
 
 </main>

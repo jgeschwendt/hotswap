@@ -1,7 +1,20 @@
-/* page.css — what is stele's alone. Tokens and components are ui.css's, the
+/* page.css — what is hotswap's alone. Tokens and components are ui.css's, the
    shell (container, measure, sections, snippets, claims, steps) is docs.css's;
    both are linked from https://gigantic.dev/ui/, never copied here. */
 
 .plan-note-after {
   margin-top: 1.25rem;
 }
+
+/* the install flow: a static svg, tokens only */
+.chart-frame { background: var(--ui-surface); border: 1px solid var(--ui-border); border-radius: var(--ui-radius-lg); overflow-x: auto; padding: var(--ui-space-4); }
+#flow svg { display: block; font-size: 12px; max-width: none; }
+#flow .flow-box { fill: var(--ui-surface-raised); stroke: var(--ui-border-strong); }
+#flow .flow-box.is-accent { fill: var(--ui-accent); stroke: var(--ui-accent); }
+#flow .flow-name { fill: var(--ui-fg); font-family: var(--ui-font-mono); font-size: 13px; }
+#flow .flow-note { fill: var(--ui-fg-muted); font-family: var(--ui-font-sans); }
+#flow .flow-path { fill: none; stroke: var(--ui-fg-muted); stroke-width: 1.5; }
+#flow .flow-path-name { fill: var(--ui-fg); font-family: var(--ui-font-mono); }
+#flow .flow-time { fill: var(--ui-fg-muted); font-family: var(--ui-font-mono); }
+#flow .is-on-accent { fill: var(--ui-accent-fg); }
+#flow marker path { fill: var(--ui-fg-muted); }
