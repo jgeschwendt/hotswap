@@ -459,7 +459,8 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
                         (File::options().create(true).append(true))
                             .open(home.join(format!("Library/Logs/{label}.log")))
                             .and_then(|mut f| writeln!(f, "{note}"))
-                            .is_err()
+                            .ok();
+                        false
                     },
                     |_| true,
                 );
