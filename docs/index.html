@@ -175,19 +175,21 @@
       <tbody>
         <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it</td></tr>
         <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code></td></tr>
-        <tr><td>latest</td><td><code class="code">curl -fsSI -w %{redirect_url} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>: only "anything newer than current?"; packslip chooses the version</td></tr>
+        <tr><td>latest</td><td><code class="code">curl -q -fsSIL -w %{url_effective} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>, a renamed repo's 301 followed and <code class="code">~/.curlrc</code> ignored: only "anything newer than current?"; packslip chooses the version</td></tr>
         <tr><td>fetch, verify</td><td class="table-mono">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/stage/&lt;tool&gt; --bin-dir &lt;root&gt;/packslip/bin</td></tr>
         <tr><td>activate, roll back</td><td><code class="code">current</code> repointed: a fresh link renamed over it; no network</td></tr>
-        <tr><td>what runs the version</td><td><code class="code">~/.local/bin/&lt;bin&gt;</code> → <code class="code">&lt;root&gt;/&lt;tool&gt;/current/&lt;bin&gt;</code>: the agents' program and the head of every step's <code class="code">PATH</code>; runnable under <code class="code">env -i</code></td></tr>
+        <tr><td>what runs the version</td><td><code class="code">~/.local/bin/&lt;bin&gt;</code> → <code class="code">&lt;root&gt;/&lt;tool&gt;/current/&lt;bin&gt;</code>: the agents' program and the head of every step's <code class="code">PATH</code>; it needs only <code class="code">HOME</code>, which every entry point refuses to run without</td></tr>
         <tr><td>trust state</td><td>packslip's, under <code class="code">&lt;root&gt;/packslip/</code></td></tr>
         <tr><td>prune</td><td>after a green swap, current and previous kept</td></tr>
-        <tr><td>uninstall</td><td><code class="code">&lt;tool&gt; setup --remove</code>, whose <code class="code">hotswap::forget</code> also deletes <code class="code">&lt;root&gt;/&lt;tool&gt;</code></td></tr>
+        <tr><td>uninstall</td><td><code class="code">&lt;tool&gt; setup --remove</code>, whose <code class="code">hotswap::forget</code>, under the tool's lock, also deletes <code class="code">&lt;root&gt;/&lt;tool&gt;</code>, its stage and packslip's export of it; the pinned packslip and its trust state, shared, stay</td></tr>
       </tbody>
     </table>
   </div>
-  <p class="docs-note"><code class="code">&lt;root&gt;</code> is <code class="code">$XDG_DATA_HOME/hotswap</code>,
-    else <code class="code">~/.local/share/hotswap</code> (<code class="code">hotswap::root()</code>):
-    tool-agnostic, so bifrost and a tool agree on it.</p>
+  <p class="docs-note"><code class="code">&lt;root&gt;</code> is always
+    <code class="code">~/.local/share/hotswap</code> (<code class="code">hotswap::root()</code>),
+    never <code class="code">$XDG_DATA_HOME</code>: the agent's plist carries only
+    <code class="code">HOME</code> and <code class="code">PATH</code>, so a shell, an agent and
+    bifrost agree on it only if <code class="code">HOME</code> decides.</p>
   <ul class="stack claims" role="list">
     <li><strong>packslip, as probed</strong> (v1.11.4, macOS arm64, 2026-11-17) — verifies
       <code class="code">packslip.sigstore.json</code> (a Sigstore bundle over an in-toto
@@ -205,10 +207,14 @@
       narrow it. No minimum release age.</li>
     <li><strong>packslip itself</strong> — pinned by a constant in the crate, its version and a
       sha256 per platform from jdx's published install script (each checked by download,
-      2026-11-17); a hotswap change bumps it. Absent, hotswap fetches
+      2026-11-17); a hotswap change bumps it. Its sha256 is checked before each use
+      (<code class="code">shasum -a 256</code>, which every macOS ships;
+      <code class="code">sha256sum</code> on Linux); absent or wrong, hotswap fetches
       <code class="code">https://packslip.dev/v1.11.4/packslip-v1.11.4-&lt;platform&gt;</code> with
-      curl, checks the sha256 with <code class="code">sha256sum</code>, and places it at
-      <code class="code">&lt;root&gt;/packslip/1.11.4/packslip</code>; never one found on PATH.
+      <code class="code">curl -q</code> into a temp file of its own pid, checks it, fsyncs it and
+      renames it to <code class="code">&lt;root&gt;/packslip/1.11.4/packslip</code>, so two tools
+      bootstrapping at once never run a half-written binary (run 2026-11-17: grove and routines
+      together); never one found on PATH.
       Platforms: darwin-arm64, linux-arm64, linux-x64. Intel Macs are unsupported: an install or
       upgrade there says so in one line.</li>
     <li><strong>the signer</strong> — each tool's manifest carries its
@@ -220,31 +226,55 @@
       newer than current?" and keeps a tick off the API. On yes, <code class="code">packslip
       install</code> runs without <code class="code">--version</code>, so a withdrawn release is
       skipped; its <code class="code">Installed &lt;project&gt; &lt;V&gt; at …</code> line names V,
-      and a V not newer than current is discarded. The export goes to
+      and a V not newer than current is discarded. <code class="code">~/.local/state/hotswap/&lt;tool&gt;.latest</code>
+      remembers which V a redirect resolved to: while the redirect says the same and that V is
+      not newer than current, or is red, a tick spends no install on it. The export goes to
       <code class="code">&lt;root&gt;/packslip/bin</code>, never <code class="code">~/.local/bin</code>,
       and names where the release keeps its binary: kept deeper, it gets a
       <code class="code">&lt;V&gt;/&lt;bin&gt;</code> link.</li>
-    <li><strong>failures before the swap</strong> — a GitHub rate limit, a network failure or a
-      failed bootstrap during a tick prints one line and exits 2, leaving the active version and
-      the record as they were and holding nothing red; the next tick tries again. Only a release
-      that installed and then failed a step is red.</li>
+    <li><strong>failures before the swap</strong> — a GitHub rate limit, a network failure, or a
+      failed bootstrap or install during a tick prints one line and exits 2 before the drain:
+      <code class="code">current</code> and the record are as they were (a fetched version may sit
+      beside them) and nothing is held red; the next tick tries again. Only a release that
+      installed and then failed a step is red. A record that cannot be saved does not stop a
+      rollback: the run rolls back, then exits 2 naming each failed save.</li>
     <li><strong>migration</strong> — <code class="code">hotswap::ensure</code>, run from mise's
       install of a version newer than the active one (or with none active), copies every version
-      in <code class="code">~/.local/share/mise/installs/&lt;key&gt;/</code> into the layout and
+      in mise's <code class="code">installs/&lt;key&gt;/</code> (found by
+      <code class="code">MISE_DATA_DIR</code>, else <code class="code">$XDG_DATA_HOME/mise</code>,
+      else <code class="code">~/.local/share/mise</code>) into the layout and
       makes the running one current: no network, so no rate limit can fail it, and the bytes are
       the ones mise verified. An unreadable version stops it, named, before anything is
-      repointed. It relinks <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the
-      loaded upgrade agent runs another program, rewrites its plist and reloads it from a
-      detached waiter once the agent's job ends. mise's dirs and the user's
+      repointed; a stage that will not go is made writable, else named. It relinks
+      <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the loaded upgrade agent runs
+      another program, rewrites its plist and starts one detached waiter (its pid in
+      <code class="code">&lt;tool&gt;.reload</code> beside the record). The waiter waits out the
+      agent's running job, boots it out, waits up to 30 s for launchd to let go, then bootstraps
+      it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
+      (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). A
+      run launchd starts between the waiter's last look and its bootout is killed at its start,
+      before any swap; launchd offers no check-and-bootout. mise's dirs and the user's
       <code class="code">packslip:jgeschwendt/&lt;tool&gt;</code> line are left alone: its copy
       and shim go stale, a stale copy never moves the layout back, and removing the line is the
       user's.</li>
     <li><strong>the migration, in sequence</strong> — the old release's upgrade agent runs
-      through mise's shim; mise bumps, and the new release's <code class="code">setup</code> step,
-      through the shim too, runs <code class="code">ensure</code> from mise's install dir before
-      the old upgrade kickstarts and smokes. The reload waits out that run and loads the plist on
-      disk: <code class="code">~/.local/bin/&lt;bin&gt; upgrade</code> after a green, the shim
-      again if the old release rolled back and rewrote it.</li>
+      through mise's shim and bumps mise first, then drains, runs setup, kickstarts and smokes.
+      The new release's <code class="code">setup</code> step, through the shim, runs
+      <code class="code">ensure</code> from mise's install dir; the reload waits out the old run and
+      loads the plist on disk: <code class="code">~/.local/bin/&lt;bin&gt; upgrade</code> after a
+      green, the shim again if the old release rolled back and rewrote it. Interrupted after the
+      bump — a refused drain, a kill, a reboot — no setup ran; the next tick runs the new binary
+      through the shim, and its <code class="code">upgrade</code>, finding no usable
+      <code class="code">current</code> (none, or one whose version is gone), runs
+      <code class="code">ensure</code> itself and swaps. No hand-run setup is needed.</li>
+    <li><strong>a manual setup during an upgrade</strong> — not serialised:
+      <code class="code">ensure</code> runs as the old release's setup step while that release
+      holds the lock, so it cannot take it. Its writes are atomic renames: relinking
+      <code class="code">~/.local/bin/&lt;bin&gt;</code> is idempotent and safe; run from a newer
+      mise copy it can repoint <code class="code">current</code> under a running swap, which
+      leaves the record and <code class="code">current</code> disagreeing until the next tick
+      swaps the active version. Safe: any setup from the layout. Unsafe: a setup from a newer
+      mise copy while an upgrade runs.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
       rendered by <code class="code">hotswap::agent_plist(tool, bin)</code> and bootstrapped by
       <code class="code">&lt;tool&gt; setup</code>: <code class="code">~/.local/bin/&lt;bin&gt;
@@ -293,8 +323,10 @@
       installs the one it chooses into the layout (§ install); one already there is kept.</li>
     <li><strong>Drain</strong> — the manifest's drain commands (§ contract), before
       <code class="code">current</code> moves; a refusal aborts: nothing swapped, nothing rolled
-      back. A running process keeps its binary — a version never overwrites another's files —
-      so only new processes see the new version.</li>
+      back. A version never overwrites another's files, so only new processes see the new
+      version; a green swap prunes all but current and previous, and a process still running
+      from an older tree keeps its loaded binary but loses anything it opens or execs from that
+      tree by path.</li>
     <li><strong>Swap</strong> — <code class="code">current</code> repointed, then
       <code class="code">&lt;tool&gt; setup</code>, then <code class="code">launchctl kickstart
       -k</code> each manifest agent except the tool's upgrade agent, whose kick would kill the
@@ -312,9 +344,10 @@
   <ul class="stack claims" role="list">
     <li><strong>the red hold</strong> — the record's <code class="code">red</code> names the
       version a run failed on, rolled back from, or left by <code class="code">--back</code>.
-      While the redirect's latest is that version, <code class="code">upgrade</code> prints
+      While the redirect's latest is that version, or packslip's choice for it is (a withdrawn
+      latest), <code class="code">upgrade</code> prints
       <code class="code">&lt;tool&gt;: &lt;v&gt; is red; waiting for a newer release</code> and
-      exits 1 without fetching (<code class="code">--check</code> shows it, exit 0). A newer
+      exits 1 without swapping (<code class="code">--check</code> shows it, exit 0). A newer
       release goes through, a green swap clears it, <code class="code">--retry</code> passes it.
       Without it every tick would move back onto the red release.</li>
     <li><strong>the manifest is the running binary's</strong> — the upgrading version supplies
@@ -328,8 +361,9 @@
       rolled-back-onto version passed its steps. A lock beside it keeps two upgrades of one tool
       apart.</li>
     <li><strong>exit codes</strong> — 0 green or settled, 1 red or refused by a drain or the
-      hold, 2 unable to try: no version in the layout, the lock held, a failed latest check,
-      bootstrap or install.</li>
+      hold, 2 unable to try (no version in the layout and none <code class="code">ensure</code>
+      can bring, the lock held, a failed latest check, bootstrap or install) or unable to save
+      the record.</li>
     <li><strong>no daemon</strong> — the upgrade agent, a person or bifrost decides when to
       call.</li>
   </ul>
@@ -351,9 +385,8 @@
       <code class="code">hotswap::agent_plist</code> among them; install routine docs into
       <code class="code">~/.routines</code>, leaving an edited copy alone; register MCP servers;
       print what it did. <code class="code">--remove</code> inverts it and calls
-      <code class="code">hotswap::forget(tool)</code>, which drops the record, the lock and
-      <code class="code">&lt;root&gt;/&lt;tool&gt;</code> so a reinstall starts clean; the tool's
-      data stays.</li>
+      <code class="code">hotswap::forget(tool, &amp;manifest)</code>, which drops what is the
+      tool's alone (§ install) so a reinstall starts clean; the tool's data stays.</li>
     <li><strong><code class="code">&lt;tool&gt; upgrade [--check | --back | --retry]</code></strong> —
       <code class="code">hotswap::upgrade(tool, &amp;manifest, &amp;args)</code>, its return the
       exit code (§ mechanism).</li>
