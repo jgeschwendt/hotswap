@@ -289,6 +289,20 @@
       <code class="code">ensure</code> only run from mise's installs or to repair a
       <code class="code">current</code> whose version is gone; run from anywhere else (a checkout)
       with no layout it touches nothing and says <code class="code">run &lt;bin&gt; setup</code>.</li>
+    <li><strong>the first release goes red after migrating</strong> — its rollback target is
+      mise's copy of a pre-hotswap release, whose setup relinks
+      <code class="code">~/.local/bin/&lt;bin&gt;</code> and the plists onto mise's shim. So a
+      rollback or <code class="code">--back</code> onto a version mise also holds runs
+      <code class="code">mise use -g packslip:&lt;repo&gt;@&lt;V&gt;</code> after repointing
+      <code class="code">current</code> and before that setup, and the shim runs the good version;
+      a missing mise or a refused call is a recorded step, never a stop. This is the one place
+      the crate still calls mise, and it retires once no machine's rollback target predates the
+      crate. The host is then back on mise: the old release's tick holds the red version (it
+      reads the same record), and the next release it bumps runs its setup through the shim,
+      whose <code class="code">ensure</code> moves the host into the layout again past the stale
+      versions. <code class="code">ensure</code> never moves <code class="code">current</code>
+      forward onto the version the record holds red; <code class="code">--retry</code> takes it
+      deliberately.</li>
     <li><strong>a manual setup during an upgrade</strong> — not serialised:
       <code class="code">ensure</code> runs as the old release's setup step while that release
       holds the lock, so it cannot take it. Its writes are atomic renames: relinking
@@ -332,7 +346,8 @@
     <h2 class="h2">Mechanism</h2>
     <p class="docs-note">One function, <code class="code">hotswap::upgrade</code>, inside the tool.
       It reads the active version from <code class="code">current</code>, speaks curl for the
-      latest check and packslip only for <code class="code">install</code> (§ install), and acts
+      latest check, packslip only for <code class="code">install</code> and mise only to move it
+      back with a rollback onto mise's copy (§ install), and acts
       when the version to run differs from its record's; a red record stays put until a new
       version or <code class="code">--back</code>.</p>
   </header>

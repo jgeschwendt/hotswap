@@ -274,8 +274,9 @@ fn suite() {
     let (bin, old, root) = (p.join("bin"), p.join("old"), p.join(".local/share/hotswap"));
     let ts = root.join("t");
     let stub = format!(
-        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -ww -o command= -p $PPID)\" in *bootout*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\nif [ \"$n\" = curl ] && [ ! -e '{p}/curl.code' ]; then case \"$*\" in *releases/latest) for u; do :; done; r=${{u#https://github.com/}}; r=${{r%/releases/latest}}; [ \"$(cut -d' ' -f1 '{p}/renamed' 2>/dev/null)\" = \"$r\" ] && {{ r=$(cut -d' ' -f2 '{p}/renamed'); case \"$*\" in *-fsSIL*) ;; *) printf 'https://github.com/%s/releases/latest' \"$r\"; exit 0;; esac; }}; t=$(cat '{p}/tag' 2>/dev/null); if [ -n \"$t\" ]; then printf 'https://github.com/%s/releases/tag/v%s' \"$r\" \"$t\"; else printf 'https://github.com/%s/releases' \"$r\"; fi; exit 0;; esac; fi\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && [ ! -e '{p}/launchctl.bootstrap.code' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || echo 0)\n",
+        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -ww -o command= -p $PPID)\" in *bootout*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\nif [ \"$n\" = curl ] && [ ! -e '{p}/curl.code' ]; then case \"$*\" in *releases/latest) for u; do :; done; r=${{u#https://github.com/}}; r=${{r%/releases/latest}}; [ \"$(cut -d' ' -f1 '{p}/renamed' 2>/dev/null)\" = \"$r\" ] && {{ r=$(cut -d' ' -f2 '{p}/renamed'); case \"$*\" in *-fsSIL*) ;; *) printf 'https://github.com/%s/releases/latest' \"$r\"; exit 0;; esac; }}; t=$(cat '{p}/tag' 2>/dev/null); if [ -n \"$t\" ]; then printf 'https://github.com/%s/releases/tag/v%s' \"$r\" \"$t\"; else printf 'https://github.com/%s/releases' \"$r\"; fi; exit 0;; esac; fi\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && [ ! -e '{p}/launchctl.bootstrap.code' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || cat \"{p}/$n.$1@$(readlink '{m}').code\" 2>/dev/null || echo 0)\n",
         t = ts.display(),
+        m = root.join("m/current").display(),
         p = p.display()
     );
     let hash = format!(
@@ -972,7 +973,7 @@ fn suite() {
 /// runs its setup.
 fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn(&str) -> String) {
     let xdg = p.join("xdg");
-    let installs = xdg.join("mise/installs/packslip-jgeschwendt-m");
+    let installs = xdg.join("mise/installs/packslip-x-m");
     let (shim, link) = (xdg.join("mise/shims/m"), p.join(".local/bin/m"));
     let ms = p.join(".local/share/hotswap/m");
     let agent = p.join("Library/LaunchAgents/dev.gigantic.m.upgrade.plist");
@@ -1226,6 +1227,90 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(outcome, reloaded);
     assert_eq!(fs::read_link(&link).unwrap(), shim);
     assert_eq!(fs::read_to_string(&agent).unwrap(), "mise's\n");
+
+    // the first release goes red after migrating: the old tick bumped mise to 2 and its drain
+    // refused; the next tick, 2 through the shim, moves the host, swaps 2, goes red and rolls back
+    // onto 1 — mise's copy of a pre-hotswap release — setting mise's active version back to 1
+    // before 1's setup puts the link and the plist on the shim, so the shim runs 1, not red 2
+    exe(
+        &p.join("bin/mise"),
+        &format!(
+            "#!/bin/sh\necho \"mise $*\" >> '{0}/log'\n[ -e '{0}/mise.code' ] && echo 'mise: use refused' >&2 && exit 1\n[ \"$1\" = use ] && echo \"${{3##*@}}\" > '{0}/active'\nexit 0\n",
+            p.display()
+        ),
+    );
+    let record = || {
+        let r: Value =
+            serde_json::from_slice(&fs::read(p.join(".local/state/hotswap/m.json")).unwrap())
+                .unwrap();
+        let f = |k: &str| r[k].to_string();
+        [f("version"), f("previous"), f("ok"), f("held"), f("red")].join(" ")
+    };
+    let active = || {
+        fs::read_to_string(p.join("active"))
+            .unwrap()
+            .trim()
+            .to_owned()
+    };
+    let mise = [("MISE_DATA_DIR", &*mise_env)];
+    on_mise();
+    fs::write(&agent_log, "").unwrap();
+    put_file("tag", "1");
+    put_file("active", "2");
+    put_file("chk.m@2.code", "3");
+    let rolled = by_shim(&["upgrade"], &mise);
+    assert!(
+        rolled.starts_with("1\nm: chk m failed; rolled back to 1\n")
+            && rolled.contains("\nmise use -g packslip:x/m@1\nm@1 setup\n"),
+        "{rolled}"
+    );
+    waited(1);
+    loaded(&link, "not running");
+    assert_eq!(versions(), "1 2 current → 1");
+    assert_eq!(active(), "1");
+    assert_eq!(fs::read_link(&link).unwrap(), shim);
+    assert_eq!(fs::read_to_string(&agent).unwrap(), "mise's\n");
+    assert_eq!(record(), r#""1" null false true "2""#);
+    // had mise kept 2 (its `use` failing), the shim's 2 never moves `current` onto itself: red,
+    // it is held, and --retry takes it again deliberately
+    put_file("active", "2");
+    assert_eq!(by_shim(&["setup"], &mise), format!("0\n{mm}"));
+    assert_eq!(versions(), "1 2 current → 1");
+    put_file("tag", "2");
+    assert_eq!(
+        by_shim(&["upgrade"], &mise),
+        format!("1\nm: 2 is red; waiting for a newer release\n{m_latest}")
+    );
+    fs::remove_file(p.join("chk.m@2.code")).unwrap();
+    put_file("next", "2");
+    let retried = by_shim(&["upgrade", "--retry"], &mise);
+    assert!(
+        retried.starts_with("0\nm 2: green, 1 smoke probes\n"),
+        "{retried}"
+    );
+    assert_eq!(versions(), "1 2 current → 2");
+    // --back onto mise's 1 moves mise too; a refused `mise use` is a recorded step, not a stop
+    put_file("mise.code", "1");
+    let back = by_shim(&["upgrade", "--back"], &mise);
+    assert!(
+        back.starts_with("0\nm 1: green, 2 smoke probes\n"),
+        "{back}"
+    );
+    let smoke: Value =
+        serde_json::from_slice(&fs::read(p.join(".local/state/hotswap/m.json")).unwrap()).unwrap();
+    assert_eq!(
+        (&smoke["smoke"][0]["probe"], &smoke["smoke"][0]["code"]),
+        (&json!("mise use -g packslip:x/m@1"), &json!(1))
+    );
+    assert_eq!(versions(), "1 2 current → 1");
+    fs::remove_file(p.join("mise.code")).unwrap();
+    // the loop closes: back on mise, the old release's tick bumps mise to 3 and runs 3's setup
+    // through the shim, which moves the host onto 3 past the stale 2
+    copy_me("3");
+    put_file("active", "3");
+    assert_eq!(by_shim(&["setup"], &mise), format!("0\n{mm}"));
+    assert_eq!(versions(), "1 2 3 current → 3");
+    assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
 }
 
 /// `agent_plist("m", "m")` under `p`, escaped as the crate escapes it.

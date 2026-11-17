@@ -414,7 +414,13 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let (dir, bin) = (root().join(tool), name(tool, m));
         let link = home.join(".local/bin").join(bin);
         let cur = current(&dir);
-        let ran = from_mise().filter(|(_, v, _)| cur.as_ref().is_none_or(|c| newer(v, c)));
+        // never forward onto the version the record holds red: a rollback left mise's copy of it
+        let red = fs::read(home.join(format!(".local/state/hotswap/{tool}.json"))).ok();
+        let red = red.and_then(|b| serde_json::from_slice::<Record>(&b).ok()?.red);
+        let ran = from_mise().filter(|(_, v, _)| {
+            cur.as_ref()
+                .is_none_or(|c| newer(v, c) && red.as_ref() != Some(v))
+        });
         if let Some((key, v, rel)) = ran {
             for d in fs::read_dir(&key)?.flatten() {
                 let n = d.file_name();
@@ -721,11 +727,32 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             return Ok(0);
         }
         // Repoints `current`, then runs the steps into a record; stops at the first failure.
-        let swap = |version: String, previous: Option<String>| {
+        // the one call left to mise: going back onto a version mise also holds, whose setup may be
+        // a pre-hotswap release's that relinks onto mise's shim, mise's active version goes back
+        // first, so the shim runs that version (best effort: a failure is a recorded step)
+        let held_by_mise = mise().join(format!("installs/packslip-{}", m.repo.replace('/', "-")));
+        let swap = |version: String, previous: Option<String>, back: bool| {
             let mut r = Record::default();
             (r.previous, r.version) = (previous, version);
             let to = relink(Path::new(&r.version), &dir.join("current"));
             r.failed = to.err().map(|e| format!("current → {}: {e}", r.version));
+            if back && r.failed.is_none() && held_by_mise.join(&r.version).is_dir() {
+                let pin = [
+                    "mise",
+                    "use",
+                    "-g",
+                    &format!("packslip:{}@{}", m.repo, r.version),
+                ];
+                let pin = pin.map(String::from);
+                let (code, output) = run(&pin);
+                if code != 0 {
+                    r.smoke.push(Probe {
+                        code,
+                        output,
+                        probe: pin.join(" "),
+                    });
+                }
+            }
             r.failed = r.failed.take().or_else(|| {
                 steps.iter().enumerate().find_map(|(i, argv)| {
                     let (code, output) = run(argv);
@@ -763,7 +790,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             if !dir.join(&p).is_dir() {
                 return Err(format!("{tool} {p}: not installed"));
             }
-            let rec = swap(p, Some(cur.clone()));
+            let rec = swap(p, Some(cur.clone()), true);
             let line = (rec.failed.as_ref())
                 .map(|f| format!("{tool}: {f} failed on {}; no second rollback", rec.version));
             (rec, line)
@@ -775,7 +802,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                     return Ok(1);
                 }
             }
-            let mut rec = swap(new.clone(), prev.clone());
+            let mut rec = swap(new.clone(), prev.clone(), false);
             // recorded before any rollback: a crash past its repoint then reads red, never the
             // previous version's green; a failed save still rolls back, and is reported after
             early = save(&mut rec).err();
@@ -786,7 +813,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                     Some(p) if !dir.join(&p).is_dir() => format!("{p} not installed"),
                     Some(p) => {
                         // no network: the previous version is still on disk
-                        let back = swap(p, before);
+                        let back = swap(p, before, true);
                         rec.smoke.extend(back.smoke);
                         (rec.version, rec.previous, rec.held) =
                             (back.version, back.previous, back.failed.is_none());
