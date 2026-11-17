@@ -549,7 +549,9 @@ fn account(home: &Path) -> bool {
             let o = out(Command::new("/bin/sh").args(["-c", "eval echo ~$(id -un)"]));
             o.ok().map(|h| PathBuf::from(h.trim()))
         })
-        .is_some_and(|h| h == home)
+        .is_some_and(|h| {
+            h.canonicalize().unwrap_or(h) == home.canonicalize().unwrap_or(home.into())
+        })
 }
 
 /// The layout's versions that predate this crate — mise's copies at a migration, but the running
