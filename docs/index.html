@@ -275,7 +275,10 @@
       before any swap; launchd offers no check-and-bootout. mise's dirs and the user's
       <code class="code">packslip:jgeschwendt/&lt;tool&gt;</code> line are left alone: its copy
       and shim go stale, a stale copy never moves the layout back, and removing the line is the
-      user's.</li>
+      user's; each migration says so in one line, on stderr and in the upgrade agent's log:
+      <code class="code">&lt;tool&gt;: moved off mise; run `mise unuse -g packslip:&lt;repo&gt;`
+      to drop mise's copy</code>, since a shell with mise's shims ahead of
+      <code class="code">~/.local/bin</code> still runs that copy.</li>
     <li><strong>the migration, in sequence</strong> — the old release's upgrade agent runs
       through mise's shim and bumps mise first, then drains, runs setup, kickstarts and smokes.
       The new release's <code class="code">setup</code> step, through the shim, runs
@@ -312,8 +315,11 @@
       swaps the active version. Safe: any setup from the layout. Unsafe: a setup from a newer
       mise copy while an upgrade runs.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
-      rendered by <code class="code">hotswap::agent_plist(tool, bin)</code> and bootstrapped by
-      <code class="code">&lt;tool&gt; setup</code>: <code class="code">~/.local/bin/&lt;bin&gt;
+      hotswap's alone: <code class="code">ensure</code> writes its plist, loads it when it is not
+      loaded and not disabled, and reloads it through the waiter when it is loaded from a stale
+      plist; <code class="code">forget</code> boots it out (when loaded from this HOME's plist) and
+      removes the plist. A tool never writes, loads or boots it out, so no tool's bootstrap can
+      land in the waiter's bootout window. It runs <code class="code">~/.local/bin/&lt;bin&gt;
       upgrade</code> every 900 s on a <code class="code">PATH</code> of
       <code class="code">~/.local/bin</code> and the system dirs, never at load (a load-time
       upgrade would race the swap that ran setup), logging to
@@ -418,8 +424,8 @@
       install duties, run by <code class="code">hotswap::install</code> and after every swap:
       first <code class="code">hotswap::ensure(tool, &amp;manifest)</code>, which returns
       <code class="code">~/.local/bin/&lt;bin&gt;</code> for the agents to run (§ install); then
-      render the launchd templates and bootstrap the agents, the upgrade agent from
-      <code class="code">hotswap::agent_plist</code> among them; install routine docs into
+      render the launchd templates and bootstrap the tool's own service agents — never the upgrade
+      agent, which is <code class="code">ensure</code>'s (§ install); install routine docs into
       <code class="code">~/.routines</code>, leaving an edited copy alone; register MCP servers;
       print what it did. <code class="code">--remove</code> inverts it and calls
       <code class="code">hotswap::forget(tool)</code>, which drops what is the
@@ -433,18 +439,17 @@
       (<code class="code">~/.local/state/hotswap/routines.json</code>), and the manifest's
       <code class="code">repo</code> its release's (<code class="code">jgeschwendt/routines</code>).
       <code class="code">bin</code> names the executable when it differs — routines ships
-      <code class="code">routine</code> and renders
-      <code class="code">agent_plist("routines", "routine")</code>; empty, the tool name stands
-      in.</li>
+      <code class="code">routine</code>, whose upgrade agent runs
+      <code class="code">~/.local/bin/routine upgrade</code>; empty, the tool name stands in.</li>
   </ul>
   <div class="table-wrap">
     <table data-table>
-      <thead><tr><th>tool</th><th>latest</th><th>signer</th><th>kickstarted</th><th>drain</th><th>smoke</th></tr></thead>
+      <thead><tr><th>tool</th><th>on this crate</th><th>latest</th><th>signer</th><th>kickstarted</th><th>drain</th><th>smoke</th></tr></thead>
       <tbody>
-        <tr><td class="table-mono">bifrost</td><td>planned (§ bifrost)</td><td>—</td><td>—</td><td>quiet</td><td><code class="code">/health</code></td></tr>
-        <tr><td class="table-mono">grove</td><td class="table-mono">2026.11.4</td><td class="table-mono">ps1_rahbrmrvyrwx2q75yvkfebgfzy</td><td class="table-mono">dev.gigantic.grove</td><td><code class="code">grove off</code></td><td><code class="code">grove --version</code> · <code class="code">GET /api/health</code> (curl, retried while the server boots)</td></tr>
-        <tr><td class="table-mono">routines</td><td class="table-mono">2026.11.0</td><td class="table-mono">ps1_t5o72jatmrlk56zmnxvdyjrvry</td><td class="table-mono">dev.gigantic.routines.due</td><td>no routine's lock held</td><td><code class="code">routine status</code></td></tr>
-        <tr><td class="table-mono">sandman</td><td class="table-mono">2026.11.1</td><td class="table-mono">ps1_nensfiggtc7n6uctbniwf7q4am</td><td class="table-mono">dev.gigantic.sandman.report</td><td>none: a shift keeps its binary</td><td><code class="code">sandman version</code> · <code class="code">sandman shift status</code> (a report-page probe would move its read cursor)</td></tr>
+        <tr><td class="table-mono">bifrost</td><td>next</td><td>planned (§ bifrost)</td><td>—</td><td>—</td><td>quiet</td><td><code class="code">/health</code></td></tr>
+        <tr><td class="table-mono">grove</td><td><a class="link" href="https://github.com/jgeschwendt/grove/pull/39">grove#39</a>, open; unreleased</td><td class="table-mono">2026.11.4</td><td class="table-mono">ps1_rahbrmrvyrwx2q75yvkfebgfzy</td><td class="table-mono">dev.gigantic.grove</td><td><code class="code">grove off</code></td><td><code class="code">grove --version</code> · <code class="code">GET /api/health</code> (curl, retried while the server boots)</td></tr>
+        <tr><td class="table-mono">routines</td><td><a class="link" href="https://github.com/jgeschwendt/routines/pull/30">routines#30</a>, open; unreleased</td><td class="table-mono">2026.11.0</td><td class="table-mono">ps1_t5o72jatmrlk56zmnxvdyjrvry</td><td class="table-mono">dev.gigantic.routines.due</td><td>no routine's lock held</td><td><code class="code">routine status</code></td></tr>
+        <tr><td class="table-mono">sandman</td><td>next, with its cutover</td><td class="table-mono">2026.11.1</td><td class="table-mono">ps1_nensfiggtc7n6uctbniwf7q4am</td><td class="table-mono">dev.gigantic.sandman.report</td><td>none: a shift keeps its binary</td><td><code class="code">sandman version</code> · <code class="code">sandman shift status</code> (a report-page probe would move its read cursor)</td></tr>
       </tbody>
     </table>
   </div>
@@ -520,11 +525,14 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
   <ol class="steps">
     <li><strong>bifrost</strong> — Components installs by <code class="code">hotswap::install</code>
       and drops its mise calls; its self-update stays open (§ install).</li>
-    <li><strong>grove and routines releases</strong> — each links the new crate: the manifest
-      gains <code class="code">repo</code> and <code class="code">signer</code>,
-      <code class="code">setup</code> opens with <code class="code">hotswap::ensure</code> and
-      runs its agents from the path it returns in place of mise's shim; its first
-      <code class="code">setup</code> migrates the host.</li>
+    <li><strong>grove and routines releases</strong> — adoption is open as
+      <a class="link" href="https://github.com/jgeschwendt/grove/pull/39">grove#39</a> and
+      <a class="link" href="https://github.com/jgeschwendt/routines/pull/30">routines#30</a>,
+      unreleased: the manifest gains <code class="code">repo</code> and
+      <code class="code">signer</code>, <code class="code">setup</code> opens with
+      <code class="code">hotswap::ensure</code>, runs its service agents from the path it returns
+      and leaves the upgrade agent to hotswap; its first <code class="code">setup</code> migrates
+      the host.</li>
     <li><strong>sandman</strong> — rides its cutover.</li>
   </ol>
   <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's self-update

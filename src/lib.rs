@@ -46,13 +46,13 @@ const PACKSLIP: (&str, [[&str; 4]; 3]) = (
 
 /// Waits out the upgrade agent's running job, boots it out, waits (30 s at most) for launchd to let
 /// go — a bootstrap in that window fails — then bootstraps it from its plist, five tries 2 s apart,
-/// printing one line on the outcome; its pid file goes, or reads `unloaded` for the next `ensure`
-/// to load: `$0` the service, `$1` the domain, `$2` the plist, `$3` the pid file.
+/// printing one line on the outcome and removing its pid file (an agent left unloaded, the next
+/// `ensure` loads): `$0` the service, `$1` the domain, `$2` the plist, `$3` the pid file.
 const RELOAD: &str = r#"while launchctl print "$0" 2>/dev/null | grep -q "state = running"; do sleep 1; done
 launchctl bootout "$0" >/dev/null 2>&1
 i=0; while launchctl print "$0" >/dev/null 2>&1 && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done
 i=0; until e=$(launchctl bootstrap "$1" "$2" 2>&1); do
-  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; echo unloaded > "$3"; exit 1; }; sleep 2
+  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; rm -f "$3"; exit 1; }; sleep 2
 done
 echo "hotswap: $0 reloaded from $2"; rm -f "$3""#;
 
@@ -401,10 +401,12 @@ fn from_mise() -> Option<(PathBuf, String, PathBuf)> {
 /// Brings the tool into hotswap's layout and returns `~/.local/bin/<bin>`, the path its agents
 /// run: the top of the tool's `setup`. Run from mise's install of a version newer than the active
 /// one, or with none active, it copies every version mise holds into the layout and makes the
-/// running one current — the move off mise, offline, mise's own dirs left alone; with none active
-/// and not run from mise, it installs the latest. It then links `~/.local/bin/<bin>` through
-/// `current`, and when launchd runs the upgrade agent from another program (mise's shim), it
-/// rewrites the agent's plist and reloads it once its running job ends.
+/// running one current — the move off mise, offline, mise's own dirs left alone, the `mise unuse`
+/// that drops mise's copy named in one line — never onto a version the record holds red; with none
+/// active and not run from mise, it installs the latest. It then links `~/.local/bin/<bin>` through
+/// `current` and owns the upgrade agent, `dev.gigantic.<tool>.upgrade`, which a tool never writes,
+/// loads or boots out: it writes the plist, loads an agent that is not loaded and not disabled,
+/// and reloads one loaded from a stale plist once its running job ends.
 ///
 /// # Errors
 /// One line naming the failure.
@@ -435,55 +437,54 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
                 }
             }
             relink(Path::new(&v), &dir.join("current"))?;
+            // a shell with mise's shims ahead of ~/.local/bin still runs mise's copy
+            let (label, ..) = agent(tool, &home);
+            let key = format!("packslip:{}", m.repo);
+            let moved =
+                format!("{tool}: moved off mise; run `mise unuse -g {key}` to drop mise's copy");
+            note(&home, &label, &moved);
         } else if cur.is_none() {
             let v = fetch(tool, m, "")?;
             relink(Path::new(&v), &dir.join("current"))?;
         }
         relink(&dir.join("current").join(bin), &link)?;
-        let label = format!("dev.gigantic.{tool}.upgrade");
-        let plist = home.join(format!("Library/LaunchAgents/{label}.plist"));
-        let (gui, plist_s) = (format!("gui/{}", uid()), plist.display().to_string());
-        let target = format!("{gui}/{label}");
-        let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+        // the upgrade agent is hotswap's alone: its plist written here, loaded when not loaded
+        // (unless the user disabled it), reloaded through the waiter when loaded from a stale plist
+        let (label, plist, gui) = agent(tool, &home);
+        let (target, plist_s) = (format!("{gui}/{label}"), plist.display().to_string());
         let pid = home.join(format!(".local/state/hotswap/{tool}.reload"));
         let mark = fs::read_to_string(&pid).unwrap_or_default();
-        // the last waiter failed every bootstrap: load the agent, unless it is loaded again (a
-        // login, the mark stale: a logout fails every bootstrap) or the user disabled it, whose
-        // choice stands; a failed load is one log line and the mark stays for the next try
-        if mark.trim() == "unloaded" {
-            let off = || {
-                out(Command::new("launchctl").args(["print-disabled", &gui]))
-                    .is_ok_and(|d| d.contains(&format!("\"{label}\" => disabled")))
-            };
-            let healed = !said.is_empty()
-                || off()
-                || out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s])).map_or_else(
-                    |w| {
-                        let note = format!("hotswap: {target} not loaded from {plist_s}: {w}");
-                        eprintln!("{note}");
-                        fs::create_dir_all(home.join("Library/Logs")).ok();
-                        (File::options().create(true).append(true))
-                            .open(home.join(format!("Library/Logs/{label}.log")))
-                            .and_then(|mut f| writeln!(f, "{note}"))
-                            .ok();
-                        false
-                    },
-                    |_| true,
-                );
-            if healed {
-                fs::remove_file(&pid)?;
-            }
-        }
-        // one waiter at a time: a setup step inside the same run finds the first one alive; a pid
-        // reused after a logout killed the waiter is not one, since its command names no plist
+        // one waiter at a time: a setup step inside the same run finds the first one alive, and no
+        // load races its bootout; a pid reused after a logout killed the waiter is not one, since
+        // its command names no plist
         let waiting = out(Command::new("ps").args(["-ww", "-o", "command=", "-p", mark.trim()]))
             .is_ok_and(|c| c.contains(&plist_s));
-        // loaded from this plist, so never a scratch HOME's; launchd re-reads it only on a bootstrap
-        if !waiting
-            && said.contains(&format!("path = {plist_s}"))
-            && !said.contains(&format!("program = {}", link.display()))
+        let text = agent_plist(tool, bin);
+        let fresh = fs::read_to_string(&plist).ok() != Some(text.clone());
+        if !waiting && fresh {
+            fs::create_dir_all(home.join("Library/LaunchAgents"))?;
+            persist(&plist, text.as_bytes())?;
+        }
+        let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+        let off = || {
+            out(Command::new("launchctl").args(["print-disabled", &gui]))
+                .is_ok_and(|d| d.contains(&format!("\"{label}\" => disabled")))
+        };
+        if waiting {
+            // the waiter owns the agent until it is done: a load here would race its bootout
+        } else if said.is_empty() && !off() {
+            if let Err(w) = out(Command::new("launchctl").args(["bootstrap", &gui, &plist_s])) {
+                note(
+                    &home,
+                    &label,
+                    &format!("hotswap: {target} not loaded from {plist_s}: {w}"),
+                );
+            }
+        } else if said.contains(&format!("path = {plist_s}"))
+            && (fresh || !said.contains(&format!("program = {}", link.display())))
         {
-            fs::write(&plist, agent_plist(tool, bin))?;
+            // loaded from this plist, so never a scratch HOME's; launchd re-reads it only on a
+            // bootstrap
             fs::create_dir_all(home.join("Library/Logs"))?;
             fs::create_dir_all(home.join(".local/state/hotswap"))?;
             let log = home.join(format!("Library/Logs/{label}.log"));
@@ -530,10 +531,26 @@ fn cmd(n: &str) -> Command {
     c
 }
 
+/// The upgrade agent's label, plist path and launchd domain.
+fn agent(tool: &str, home: &Path) -> (String, PathBuf, String) {
+    let label = format!("dev.gigantic.{tool}.upgrade");
+    let plist = home.join(format!("Library/LaunchAgents/{label}.plist"));
+    (label, plist, format!("gui/{}", uid()))
+}
+
+/// One line on stderr and in the upgrade agent's log, for what happens unattended.
+fn note(home: &Path, label: &str, line: &str) {
+    eprintln!("{line}");
+    fs::create_dir_all(home.join("Library/Logs")).ok();
+    (File::options().create(true).append(true))
+        .open(home.join(format!("Library/Logs/{label}.log")))
+        .and_then(|mut f| writeln!(f, "{line}"))
+        .ok();
+}
+
 /// The launchd plist of the tool's own upgrade agent, `dev.gigantic.<tool>.upgrade`:
 /// `~/.local/bin/<bin> upgrade` every 900 s, on a PATH that names no shims and no mise.
-#[must_use]
-pub fn agent_plist(tool: &str, bin: &str) -> String {
+fn agent_plist(tool: &str, bin: &str) -> String {
     let home = home().display().to_string().replace('&', "&amp;");
     let home = home.replace('<', "&lt;").replace('>', "&gt;");
     let label = format!("dev.gigantic.{tool}.upgrade");
@@ -577,15 +594,25 @@ fn lock(tool: &str, state: &Path) -> Result<File, String> {
     Ok(f)
 }
 
-/// Drops what is the tool's alone, under its lock — record, latest hint, reload pid, versions, its
-/// packslip dirs (trust state, export, stage) — so a reinstall starts clean; the pinned packslip
-/// binary, shared, stays. `<tool> setup --remove` calls it.
+/// Drops what is the tool's alone, under its lock — the upgrade agent (booted out, its plist
+/// removed), record, latest hint, reload pid, versions, its packslip dirs (trust state, export,
+/// stage) — so a reinstall starts clean; the pinned packslip binary, shared, stays. `<tool> setup
+/// --remove` calls it.
 ///
 /// # Errors
 /// HOME unset, or another hotswap of the tool running.
 pub fn forget(tool: &str) -> Result<(), String> {
-    let state = homed()?.join(".local/state/hotswap");
+    let home = homed()?;
+    let state = home.join(".local/state/hotswap");
     let _lock = lock(tool, &state)?;
+    // the upgrade agent ensure loaded: booted out only when loaded from this HOME's plist
+    let (label, plist, gui) = agent(tool, &home);
+    let target = format!("{gui}/{label}");
+    let said = out(Command::new("launchctl").args(["print", &target])).unwrap_or_default();
+    if said.contains(&format!("path = {}", plist.display())) {
+        out(Command::new("launchctl").args(["bootout", &target])).ok();
+    }
+    fs::remove_file(&plist).ok();
     for e in ["json", "latest", "lock", "reload"] {
         fs::remove_file(state.join(format!("{tool}.{e}"))).ok();
     }

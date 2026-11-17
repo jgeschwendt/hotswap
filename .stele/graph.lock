@@ -3,12 +3,12 @@
   "landmarks": {
     "bifrost": {
       "file": "docs/index.html",
-      "line": 472,
+      "line": 477,
       "node": "docs"
     },
     "contract": {
       "file": "docs/index.html",
-      "line": 409,
+      "line": 415,
       "node": "docs"
     },
     "install": {
@@ -18,17 +18,17 @@
     },
     "mechanism": {
       "file": "docs/index.html",
-      "line": 343,
+      "line": 349,
       "node": "docs"
     },
     "next": {
       "file": "docs/index.html",
-      "line": 514,
+      "line": 519,
       "node": "docs"
     },
     "non-goals": {
       "file": "docs/index.html",
-      "line": 500,
+      "line": 505,
       "node": "docs"
     },
     "release": {
@@ -68,7 +68,7 @@
       },
       "id": "/",
       "kind": "system",
-      "purpose": "hotswap — the crate in each gigantic tool — `ensure`, `install`, `upgrade` on packslip and its own version dirs (drain, repoint, swap, smoke, settle or roll back), `forget`, `agent_plist`, `root`"
+      "purpose": "hotswap — the crate in each gigantic tool — `ensure` (layout, upgrade agent), `install`, `upgrade` on packslip and its own version dirs (drain, swap, smoke, settle or roll back), `forget`, `root`"
     },
     "docs": {
       "budget": null,
@@ -102,7 +102,7 @@
       },
       "id": "src",
       "kind": "container",
-      "purpose": "crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise), `install`, `upgrade`, `forget`, `agent_plist`, `root`"
+      "purpose": "crate source — `lib.rs` is the whole crate — packslip pin and bootstrap, `Manifest`, `ensure` (layout, migration off mise, the upgrade agent), `install`, `upgrade`, `forget`, `root`"
     },
     "tests": {
       "budget": null,
