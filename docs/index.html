@@ -287,7 +287,9 @@
       green, the shim again if the old release rolled back and rewrote it. Interrupted after the
       bump — a refused drain, a kill, a reboot — no setup ran; the next tick runs the new binary
       through the shim, and its <code class="code">upgrade</code>, finding no usable
-      <code class="code">current</code>, runs <code class="code">ensure</code> itself and swaps. No
+      <code class="code">current</code>, runs <code class="code">ensure</code> itself, recording
+      nothing, and swaps: a refused drain, a failed check or install, a kill mid-steps leave the
+      record as the tick found it, naming another version, so the next tick runs the steps. No
       hand-run setup is needed. <code class="code">upgrade</code> calls
       <code class="code">ensure</code> only run from mise's installs or to repair a
       <code class="code">current</code> whose version is gone; run from anywhere else (a checkout)
@@ -412,7 +414,8 @@
       <code class="code">red</code>, and sets <code class="code">held</code> when the
       rolled-back-onto version passed its steps. A lock beside it keeps two upgrades of one tool
       apart. The disk is the truth and the record its cache: <code class="code">ensure</code>
-      records a version it makes current (a first install, a migration) unless the record names
+      records a version it makes current (a first install, a migration; never the repair inside
+      <code class="code">upgrade</code>, whose own result is the record) unless the record names
       it already, green with no smoke, the red hold kept, its previous the version active before,
       else the record's, when on disk. So a host holding an older record (sandman's, from its mise
       days) never swaps onto the version it runs. A record still naming another version is stale,

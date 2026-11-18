@@ -1289,6 +1289,30 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(waited(1), (reload.clone(), reloaded.to_string()));
     thread::sleep(Duration::from_millis(300));
     assert_eq!(fs::read_to_string(&agent_log).unwrap().lines().count(), 1);
+    // the same tick refused by its drain, past the repair: the record still names 1, never a
+    // green 2 the repair made current, so the next tick runs 2's steps
+    on_mise();
+    fs::write(&agent_log, "").unwrap();
+    put_file("active", "2");
+    let drain = json!({"drain": [["false"]], "repo": "x/m", "setup": ["m", "setup"], "smoke": [["chk", "m"]]});
+    let drain = [
+        ("MISE_DATA_DIR", &*mise_env),
+        ("MANIFEST", &drain.to_string()),
+    ];
+    let refused = by_shim(&["upgrade"], &drain);
+    assert!(
+        refused.starts_with("1\nm: false refused; nothing swapped\n"),
+        "{refused}"
+    );
+    assert_eq!(record(), r#""1" null true null null"#);
+    waited(1);
+    let next = by_shim(&["upgrade"], &[("MISE_DATA_DIR", &mise_env)]);
+    assert!(
+        next.starts_with("0\nm 2: green, 1 smoke probes\n"),
+        "{next}"
+    );
+    // both ticks reloaded the agent off the shim: wait both out
+    waited(2);
 
     // smoke red, so the old tick `mise use`s 1, whose setup puts the link and the plist back on
     // the shim; the waiter, waiting out the old tick, loads the plist on disk: the old world,
