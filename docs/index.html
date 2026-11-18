@@ -173,7 +173,7 @@
     <table data-table>
       <thead><tr><th>job</th><th>how</th></tr></thead>
       <tbody>
-        <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it and records it</td></tr>
+        <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it and records it; a failed setup leaves the record unverified (not <code class="code">ok</code>, <code class="code">failed</code> the setup, nothing red), so the next tick runs the steps again</td></tr>
         <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code>; the record is its cache</td></tr>
         <tr><td>latest</td><td><code class="code">curl -q -fsSIL -w %{url_effective} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>, a renamed repo's 301 followed and <code class="code">~/.curlrc</code> ignored: only "anything newer than current?"; packslip chooses the version</td></tr>
         <tr><td>fetch, verify</td><td><code class="code">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/packslip/&lt;tool&gt;/stage --bin-dir &lt;root&gt;/packslip/&lt;tool&gt;/bin</code>, killed with its process group past the manifest's <code class="code">fetch_timeout</code> (600 s)</td></tr>
@@ -418,7 +418,10 @@
       days) never swaps onto the version it runs. A record still naming another version is stale,
       left by a run that died past its repoint: <code class="code">upgrade</code> runs the steps
       on the active version, its previous the record's version when on disk, and
-      <code class="code">--back</code> returns to that version.</li>
+      <code class="code">--back</code> returns to that version. So does an unverified record, one
+      naming the active version not ok and holding nothing red, which a failed
+      <code class="code">install</code> leaves: the steps run again, the record's previous the
+      rollback target.</li>
     <li><strong>exit codes</strong> — 0 green or settled, 1 red or refused by a drain or the
       hold, 2 unable to try (no version in the layout and none <code class="code">ensure</code>
       can bring, the lock held, a failed latest check, bootstrap or install) or unable to save

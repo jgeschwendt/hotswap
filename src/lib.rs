@@ -116,6 +116,11 @@ fn now() -> u64 {
     (SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)).map_or(0, |d| d.as_secs())
 }
 
+/// The record at `path`, when there is one that parses.
+fn read(path: &Path) -> Option<Record> {
+    serde_json::from_slice(&fs::read(path).ok()?).ok()
+}
+
 /// `$HOME`, refused when unset: a relative path would write into the cwd.
 fn homed() -> Result<PathBuf, String> {
     Some(home())
@@ -424,7 +429,7 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let link = home.join(".local/bin").join(bin);
         let (cur, state) = (current(&dir), home.join(".local/state/hotswap"));
         let path = state.join(format!("{tool}.json"));
-        let old = (fs::read(&path).ok()).and_then(|b| serde_json::from_slice::<Record>(&b).ok());
+        let old = read(&path);
         // never forward onto the version the record holds red: a rollback left mise's copy of it
         let red = old.as_ref().and_then(|r| r.red.clone());
         let ran = from_mise().filter(|(_, v, _)| {
@@ -605,7 +610,9 @@ fn mise_free(tool: &str, m: &Manifest, home: &Path) {
 }
 
 /// A first install, for bifrost or a bare bootstrap: `ensure`, then the manifest's setup through
-/// the new link. Returns the exit code: 0 installed, 1 setup failed, 2 unable to install.
+/// the new link; a failed setup leaves the record unverified (not ok, its `failed` the setup), so
+/// the next upgrade runs the steps again. Returns the exit code: 0 installed, 1 setup failed, 2
+/// unable to install.
 #[must_use]
 pub fn install(tool: &str, m: &Manifest) -> i32 {
     match ensure(tool, m) {
@@ -614,7 +621,13 @@ pub fn install(tool: &str, m: &Manifest) -> i32 {
             2
         }
         Ok(_) => m.setup.split_first().map_or(0, |(n, a)| {
-            i32::from(!cmd(n).args(a).status().is_ok_and(|s| s.success()))
+            let ok = cmd(n).args(a).status().is_ok_and(|s| s.success());
+            let path = home().join(format!(".local/state/hotswap/{tool}.json"));
+            if let Some(mut r) = read(&path).filter(|_| !ok) {
+                (r.ok, r.failed, r.at) = (false, Some(m.setup.join(" ")), now());
+                serde_json::to_vec(&r).map(|b| persist(&path, &b)).ok();
+            }
+            i32::from(!ok)
         }),
     }
 }
@@ -751,7 +764,7 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             .then(|| lock(tool, &state))
             .transpose()?;
         // read before a repair: its `ensure` records the version it brings, whose steps still run
-        let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
+        let old = read(&path);
         // a host the old release bumped through mise but never set up (a refused drain, a kill)
         // runs this through mise's shim with no layout, and a `current` whose version went is
         // repaired; a binary run from anywhere else (a checkout) touches nothing
@@ -824,10 +837,11 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             let (code, out, _) = run(c, m.timeout.unwrap_or(120));
             (code, out)
         };
-        // Settled on this version, green or red: only a new version or `--back` moves it.
+        // Settled on this version, green or red: only a new version or `--back` moves it. Not ok
+        // and holding nothing red is unverified (a failed install): its steps run again.
         if let Some(r) = old
             .as_ref()
-            .filter(|r| mode != "--back" && r.version == new)
+            .filter(|r| mode != "--back" && r.version == new && (r.ok || r.red.is_some()))
         {
             let state = if r.ok {
                 "up to date".into()
@@ -914,20 +928,19 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                 .and_then(|b| persist(&path, &b))
                 .map_err(|e| format!("{tool}: {}: {e}", path.display()))
         };
-        let (prev, before, green, back) = old.map_or(Default::default(), |r| {
-            // `--back`'s target, the version before `current`: the record's own when it names
-            // another (stale: a run died past its repoint), else its previous
-            let back = Some(r.version.clone()).filter(|v| *v != cur);
-            let back = back.or(r.previous.clone());
-            let on_disk = Some(r.version).filter(|v| dir.join(v).is_dir());
-            (on_disk, r.previous, r.ok || r.held, back)
+        // the rollback target (`--back`'s too, `new` there being `current`): the first of the
+        // record's version and its previous that is not `new` and is on disk; a record naming
+        // `new` (stale: a run died past its repoint, or unverified) trusts its previous, the
+        // version active before
+        let (prev, before, green) = old.map_or(Default::default(), |r| {
+            let green = r.ok || r.held || r.version == new;
+            let prev = ([Some(r.version), r.previous.clone()].into_iter().flatten())
+                .find(|v| *v != new && dir.join(v).is_dir());
+            (prev.clone(), r.previous.filter(|b| prev.as_ref() != Some(b)), green)
         });
         let mut early = None;
         let (mut rec, line) = if mode == "--back" {
-            let p = back.ok_or_else(|| format!("{tool}: no previous version"))?;
-            if !dir.join(&p).is_dir() {
-                return Err(format!("{tool} {p}: not installed"));
-            }
+            let p = prev.ok_or_else(|| format!("{tool}: no previous version"))?;
             let (mut rec, stuck) = swap(p, Some(cur.clone()), true);
             let line = (rec.failed.as_ref())
                 .map(|f| format!("{tool}: {f} failed on {}; no second rollback", rec.version));
