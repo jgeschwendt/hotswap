@@ -568,8 +568,12 @@ fn suite() {
     fs::set_permissions(staged.join("x"), fs::Permissions::from_mode(0o000)).unwrap();
     fs::write(&ps, "garbage").unwrap();
     // a fresh install: ensure writes the upgrade agent's plist and, not loaded and not disabled,
-    // loads it — once; the tool's setup never touches it
+    // loads it — once; the tool's setup never touches it. A record left from mise's days names
+    // 1, never on disk here: ensure records the version it installs, with no previous
     put_file("booted", "");
+    fs::create_dir_all(&state_dir).unwrap();
+    let r = json!({"at": 0, "ok": true, "previous": "0", "smoke": [], "version": "1"});
+    fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
     let t_plist = p.join("Library/LaunchAgents/dev.gigantic.t.upgrade.plist");
     let load = "launchctl print-disabled gui/$UID\nlaunchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.t.upgrade.plist\n";
     assert_eq!(
@@ -577,6 +581,7 @@ fn suite() {
         format!("0\nsetup out\nsetup err\n{boot}{t_pk}{t_print}{load}t@2 setup\n")
     );
     assert_eq!(fs::read_to_string(&t_plist).unwrap(), plist);
+    assert_eq!(state(), r#""2" null true null null"#);
     assert!(!temps());
     assert_eq!(versions(&ts), "2*");
     assert_eq!(
@@ -659,6 +664,12 @@ fn suite() {
     put_file("renamed", "x/t x/t-renamed");
     tag("2");
     assert_eq!(run(&["--back"]), "2\nt: no previous version\n");
+    // the installed version is the running one: no swap onto it
+    let settled = format!("0\nt 2: up to date\n{t_latest}");
+    assert_eq!(run(&["--check"]), settled);
+    assert_eq!(run(&[]), settled);
+    // with no record, the active version is swapped
+    fs::remove_file(state_dir.join("t.json")).unwrap();
     let plan = swap("2", "2")
         .trim_end()
         .replace('\n', "\n  ")
@@ -848,11 +859,12 @@ fn suite() {
     code("chk.code");
     assert_eq!(run(&[]), red("3 is red; no rollback", &swap("2", "2")));
     assert_eq!(state(), r#""2" "3" false "chk x" "2""#);
-    // the previous version is gone from the layout
+    // a record on a version gone from the layout is stale: --back has nowhere to go, and the swap
+    // names no previous
     put("0");
-    assert_eq!(run(&[]), red("0 not installed", &swap("2", "2")));
-    assert_eq!(state(), r#""2" "0" false "chk x" "2""#);
     assert_eq!(run(&["--back"]), "2\nt 0: not installed\n");
+    assert_eq!(run(&[]), red("no previous version", &swap("2", "2")));
+    assert_eq!(state(), r#""2" null false "chk x" "2""#);
     // a deliberate rollback that goes red stays there
     let r = json!({"at": 0, "failed": "chk x", "ok": false, "previous": "1", "smoke": [], "version": "2"});
     fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
@@ -890,6 +902,8 @@ fn suite() {
             go(t, &["setup"], &[]),
             format!("0\n~/.local/bin/{bin}\n{}{}", fetch(t, repo, ""), print(t))
         );
+        // unrecorded, so the next upgrade runs the steps on the installed version
+        fs::remove_file(state_dir.join(format!("{t}.json"))).unwrap();
     };
     // a packslip that hangs is killed with its group at the deadline, leaving no stage; each tool
     // has its own packslip dirs, so none waits on another's lock
@@ -1118,6 +1132,13 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
         )
     };
     let plist = hotswap_plist(p);
+    let record = || {
+        let r: Value =
+            serde_json::from_slice(&fs::read(p.join(".local/state/hotswap/m.json")).unwrap())
+                .unwrap();
+        let f = |k: &str| r[k].to_string();
+        [f("version"), f("previous"), f("ok"), f("held"), f("red")].join(" ")
+    };
     let smoke = "chk m\n";
     let mm = format!("~/.local/bin/m\n{print}\n");
     // once no version on disk predates the crate, a green says, once, here and in the agent's
@@ -1155,6 +1176,8 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     );
     assert_eq!(outcome, reloaded.to_string());
     assert_eq!(versions(), "1 2 current → 2");
+    // recorded as the move made it: 2 running, mise's 1 the rollback target
+    assert_eq!(record(), r#""2" "1" true false null"#);
     assert_eq!(fs::read(ms.join("2/m")).unwrap(), fs::read(&me).unwrap());
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
     assert_eq!(fs::read_to_string(&agent).unwrap(), plist);
@@ -1200,15 +1223,12 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
     assert!(!reload_pid.exists());
     fs::write(&agent_log, "").unwrap();
-    // the next tick, the agent on the link: no mise, nothing reloads
+    // the next tick, the agent on the link: no mise, nothing reloads, no swap onto the running 2
     loaded(&link, "not running");
     let tick = launch(&mut Command::new(&link), &["upgrade"], &[]);
     let m_latest =
         "curl -q -fsSIL -o /dev/null -w %{url_effective} https://github.com/x/m/releases/latest\n";
-    assert_eq!(
-        tick,
-        format!("0\nm 2: green, 1 smoke probes\n{m_latest}{print}\n{smoke}")
-    );
+    assert_eq!(tick, format!("0\nm 2: up to date\n{m_latest}"));
     // mise's newer 3 moves the layout on, a stale mise 2 never moves it back, and a run from the
     // layout relinks a link moved elsewhere
     copy_me("3");
@@ -1232,15 +1252,12 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     );
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
     // a `current` whose version was removed by hand is no current: the next run through mise's
-    // shim repairs it
+    // shim copies it back, and the record already names it
     fs::remove_dir_all(ms.join("3")).unwrap();
     put_file("active", "3");
     let fixed = by_shim(&["upgrade"], &[("MISE_DATA_DIR", &mise_env)]);
-    assert!(
-        fixed.starts_with("0\nm 3: green, 1 smoke probes\n"),
-        "{fixed}"
-    );
-    assert_eq!(versions(), "2 3 current → 3");
+    assert!(fixed.starts_with("0\nm 3: up to date\n"), "{fixed}");
+    assert_eq!(versions(), "1 2 3 current → 3");
     fs::remove_dir_all(installs.join("3")).unwrap();
 
     // a refused drain: the old tick bumped mise and stopped, so no setup ran and no layout exists;
@@ -1291,13 +1308,6 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
             p.display()
         ),
     );
-    let record = || {
-        let r: Value =
-            serde_json::from_slice(&fs::read(p.join(".local/state/hotswap/m.json")).unwrap())
-                .unwrap();
-        let f = |k: &str| r[k].to_string();
-        [f("version"), f("previous"), f("ok"), f("held"), f("red")].join(" ")
-    };
     let active = || {
         fs::read_to_string(p.join("active"))
             .unwrap()
@@ -1380,15 +1390,9 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     assert_eq!(by_shim(&["setup"], &mise), format!("0\n{mm}"));
     assert_eq!(versions(), "1 2 3 current → 3");
     assert_eq!(fs::read_link(&link).unwrap(), ms.join("current/m"));
-    // 3 green keeps 1, its previous, which still needs mise: no hint; 4 green prunes 1, the last
-    // version that predates the crate, and says, once, that mise's copy can go
-    put_file("tag", "3");
-    let three = launch(&mut Command::new(ms.join("3/m")), &["upgrade"], &[]);
-    assert!(
-        three.starts_with("0\nm 3: green") && !three.contains("needs mise"),
-        "{three}"
-    );
-    assert_eq!(versions(), "1 3 current → 3");
+    // recorded with 1, the version it left, as previous, and 2's hold kept; 4 green prunes 1, the
+    // last version that predates the crate, and says, once, that mise's copy can go
+    assert_eq!(record(), r#""3" "1" true false "2""#);
     put_file("tag", "4");
     put_file("next", "4");
     let four = launch(&mut Command::new(ms.join("3/m")), &["upgrade"], &[]);

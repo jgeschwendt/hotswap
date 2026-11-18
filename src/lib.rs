@@ -111,6 +111,11 @@ fn home() -> PathBuf {
     PathBuf::from(env::var_os("HOME").unwrap_or_default())
 }
 
+/// Seconds since the epoch, 0 before it.
+fn now() -> u64 {
+    (SystemTime::now().duration_since(SystemTime::UNIX_EPOCH)).map_or(0, |d| d.as_secs())
+}
+
 /// `$HOME`, refused when unset: a relative path would write into the cwd.
 fn homed() -> Result<PathBuf, String> {
     Some(home())
@@ -403,7 +408,9 @@ fn from_mise() -> Option<(PathBuf, String, PathBuf)> {
 /// one, or with none active, it copies every version mise holds into the layout and makes the
 /// running one current — the move off mise, offline, mise's own dirs left alone, the `mise unuse`
 /// that drops mise's copy named in one line — never onto a version the record holds red; with none
-/// active and not run from mise, it installs the latest. It then links `~/.local/bin/<bin>` through
+/// active and not run from mise, it installs the latest. A version it makes current is recorded
+/// unless the record names it already: green, no smoke, the red hold kept, its previous the version
+/// active before, else the record's, when on disk. It then links `~/.local/bin/<bin>` through
 /// `current` and owns the upgrade agent, `dev.gigantic.<tool>.upgrade`, which a tool never writes,
 /// loads or boots out: it writes the plist, loads an agent that is not loaded and not disabled,
 /// and reloads one loaded from a stale plist once its running job ends.
@@ -415,15 +422,16 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
         let home = homed()?;
         let (dir, bin) = (root().join(tool), name(tool, m));
         let link = home.join(".local/bin").join(bin);
-        let cur = current(&dir);
+        let (cur, state) = (current(&dir), home.join(".local/state/hotswap"));
+        let path = state.join(format!("{tool}.json"));
+        let old = (fs::read(&path).ok()).and_then(|b| serde_json::from_slice::<Record>(&b).ok());
         // never forward onto the version the record holds red: a rollback left mise's copy of it
-        let red = fs::read(home.join(format!(".local/state/hotswap/{tool}.json"))).ok();
-        let red = red.and_then(|b| serde_json::from_slice::<Record>(&b).ok()?.red);
+        let red = old.as_ref().and_then(|r| r.red.clone());
         let ran = from_mise().filter(|(_, v, _)| {
             cur.as_ref()
                 .is_none_or(|c| newer(v, c) && red.as_ref() != Some(v))
         });
-        if let Some((key, v, rel)) = ran {
+        let set = if let Some((key, v, rel)) = ran {
             // every copy but the running one predates this crate: its setup needs mise's shim
             let mut old = vec![];
             for d in fs::read_dir(&key)?.flatten() {
@@ -440,15 +448,32 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
                 }
             }
             let (file, _) = premise(&home, tool);
-            fs::create_dir_all(home.join(".local/state/hotswap"))?;
+            fs::create_dir_all(&state)?;
             let mut listed = fs::read_to_string(&file).unwrap_or_default();
             listed.extend(old);
             persist(&file, listed.as_bytes())?;
-            relink(Path::new(&v), &dir.join("current"))?;
             mise_free(tool, m, &home);
-        } else if cur.is_none() {
-            let v = fetch(tool, m, "")?;
+            Some(v)
+        } else {
+            cur.is_none().then(|| fetch(tool, m, "")).transpose()?
+        };
+        if let Some(v) = set {
             relink(Path::new(&v), &dir.join("current"))?;
+            // the record caches `current`: one left naming another version would swap onto this
+            // one at the next tick
+            if old.as_ref().is_none_or(|r| r.version != v) {
+                let previous = (cur.or(old.map(|r| r.version))).filter(|p| dir.join(p).is_dir());
+                let r = Record {
+                    at: now(),
+                    ok: true,
+                    previous,
+                    red,
+                    version: v,
+                    ..Record::default()
+                };
+                fs::create_dir_all(&state)?;
+                persist(&path, &serde_json::to_vec(&r)?)?;
+            }
         }
         relink(&dir.join("current").join(bin), &link)?;
         tend(tool, bin, &home, &link)?;
@@ -725,6 +750,8 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
         let _lock = (mode != "--check")
             .then(|| lock(tool, &state))
             .transpose()?;
+        // read before a repair: its `ensure` records the version it brings, whose steps still run
+        let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
         // a host the old release bumped through mise but never set up (a refused drain, a kill)
         // runs this through mise's shim with no layout, and a `current` whose version went is
         // repaired; a binary run from anywhere else (a checkout) touches nothing
@@ -736,7 +763,6 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             "{tool}: no version under {}; run {bin} setup",
             dir.display()
         ))?;
-        let old: Option<Record> = serde_json::from_slice(&fs::read(&path).unwrap_or_default()).ok();
         let (mut new, mut pending, me) =
             (cur.clone(), None, format!("dev.gigantic.{tool}.upgrade"));
         if mode != "--back" {
@@ -883,19 +909,22 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             r.ok = r.failed.is_none();
             // a deliberate rollback holds off the version it left, as a red swap does
             r.red = (mode == "--back" || !r.ok).then(|| new.clone());
-            r.at = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .map_or(0, |d| d.as_secs());
+            r.at = now();
             (serde_json::to_vec(&r).map_err(io::Error::from))
                 .and_then(|b| persist(&path, &b))
                 .map_err(|e| format!("{tool}: {}: {e}", path.display()))
         };
-        let (prev, before, green) = old.map_or((None, None, false), |r| {
-            (Some(r.version), r.previous, r.ok || r.held)
+        let (prev, before, green, back) = old.map_or(Default::default(), |r| {
+            // `--back`'s target, the version before `current`: the record's own when it names
+            // another (stale: a run died past its repoint), else its previous
+            let back = Some(r.version.clone()).filter(|v| *v != cur);
+            let back = back.or(r.previous.clone());
+            let on_disk = Some(r.version).filter(|v| dir.join(v).is_dir());
+            (on_disk, r.previous, r.ok || r.held, back)
         });
         let mut early = None;
         let (mut rec, line) = if mode == "--back" {
-            let p = before.ok_or_else(|| format!("{tool}: no previous version"))?;
+            let p = back.ok_or_else(|| format!("{tool}: no previous version"))?;
             if !dir.join(&p).is_dir() {
                 return Err(format!("{tool} {p}: not installed"));
             }
@@ -925,7 +954,6 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
                 let why = match prev {
                     None => "no previous version".into(),
                     Some(p) if !green => format!("{p} is red; no rollback"),
-                    Some(p) if !dir.join(&p).is_dir() => format!("{p} not installed"),
                     Some(p) => {
                         // no network: the previous version is still on disk
                         let (back, stuck) = swap(p, before, true);
