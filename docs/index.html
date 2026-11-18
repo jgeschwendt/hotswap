@@ -532,18 +532,15 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
     <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
   </header>
   <ol class="steps">
-    <li><strong>bifrost</strong> — Components installs by <code class="code">hotswap::install</code>
-      and drops its mise calls; its self-update stays open (§ install).</li>
-    <li><strong>grove and routines releases</strong> — adoption is open as
-      <a class="link" href="https://github.com/jgeschwendt/grove/pull/39">grove#39</a> and
-      <a class="link" href="https://github.com/jgeschwendt/routines/pull/30">routines#30</a>,
-      unreleased: the manifest gains <code class="code">repo</code> and
-      <code class="code">signer</code>, <code class="code">setup</code> opens with
-      <code class="code">hotswap::ensure</code>, runs its service agents from the path it returns
-      and leaves the upgrade agent to hotswap; its first <code class="code">setup</code> migrates
-      the host.</li>
-    <li><strong>sandman</strong> — rides its cutover.</li>
+    <li><strong>sandman</strong> — rides its cutover: the rewrite's first release carries the
+      manifest, and its <code class="code">setup</code> opens with
+      <code class="code">hotswap::ensure</code>.</li>
+    <li><strong>bifrost's self-update</strong> — still open (§ install); Components itself installs
+      by <code class="code">hotswap::install</code> with no mise call.</li>
   </ol>
+  <p class="docs-note">Landed: routines 2026.11.1 and grove 2026.11.5 carry this design. A host on
+    an older release finds them through mise's version index, which can trail a release by hours,
+    and migrates on that upgrade; from then on the latest check asks GitHub directly.</p>
   <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's self-update
     (§ install); bifrost's first packslip release.</p>
 </section>
