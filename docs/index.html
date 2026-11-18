@@ -149,7 +149,7 @@
           <text class="flow-note" x="12" y="290">what a shell and the agents run</text>
           <text class="flow-name" x="12" y="326">the record</text>
           <text class="flow-path-name" x="12" y="348">~/.local/state/hotswap/grove.json</text>
-          <text class="flow-note" x="12" y="366">read by hotswap and bifrost</text>
+          <text class="flow-note" x="12" y="366">current's cache, read by hotswap and bifrost</text>
         </g>
         <g aria-hidden="true">
           <path class="flow-path" marker-end="url(#flow-head)" d="M176,72H224" />
@@ -173,8 +173,8 @@
     <table data-table>
       <thead><tr><th>job</th><th>how</th></tr></thead>
       <tbody>
-        <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it</td></tr>
-        <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code></td></tr>
+        <tr><td>install</td><td><code class="code">hotswap::install(tool, &amp;m)</code>, for bifrost (next) or a bare bootstrap: packslip bootstrapped if absent, the latest installed into the layout, then <code class="code">&lt;tool&gt; setup</code>, whose <code class="code">hotswap::ensure</code> points <code class="code">current</code> and <code class="code">~/.local/bin/&lt;bin&gt;</code> at it and records it</td></tr>
+        <tr><td>active version</td><td>the target of <code class="code">&lt;root&gt;/&lt;tool&gt;/current</code>; the record is its cache</td></tr>
         <tr><td>latest</td><td><code class="code">curl -q -fsSIL -w %{url_effective} https://github.com/&lt;repo&gt;/releases/latest</code> → <code class="code">…/tag/v&lt;V&gt;</code>, a renamed repo's 301 followed and <code class="code">~/.curlrc</code> ignored: only "anything newer than current?"; packslip chooses the version</td></tr>
         <tr><td>fetch, verify</td><td><code class="code">packslip install github.com/&lt;repo&gt; --pin &lt;signer&gt; --install-dir &lt;root&gt;/packslip/&lt;tool&gt;/stage --bin-dir &lt;root&gt;/packslip/&lt;tool&gt;/bin</code>, killed with its process group past the manifest's <code class="code">fetch_timeout</code> (600 s)</td></tr>
         <tr><td>activate, roll back</td><td><code class="code">current</code> repointed: a fresh link renamed over it; no network</td></tr>
@@ -253,7 +253,7 @@
       in mise's <code class="code">installs/&lt;key&gt;/</code> (found by
       <code class="code">MISE_DATA_DIR</code>, else <code class="code">$XDG_DATA_HOME/mise</code>,
       else <code class="code">~/.local/share/mise</code>) into the layout and
-      makes the running one current: no network, so no rate limit can fail it, and the bytes are
+      makes the running one current, recorded: no network, so no rate limit can fail it, and the bytes are
       the ones mise verified. An unreadable version stops it, named, before anything is
       repointed; a stage that will not go is made writable, else named. It relinks
       <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the loaded upgrade agent runs
@@ -314,9 +314,9 @@
       <code class="code">ensure</code> runs as the old release's setup step while that release
       holds the lock, so it cannot take it. Its writes are atomic renames: relinking
       <code class="code">~/.local/bin/&lt;bin&gt;</code> is idempotent and safe; run from a newer
-      mise copy it can repoint <code class="code">current</code> under a running swap, which
-      leaves the record and <code class="code">current</code> disagreeing until the next tick
-      swaps the active version. Safe: any setup from the layout. Unsafe: a setup from a newer
+      mise copy it can repoint <code class="code">current</code> under a running swap, whose
+      record, saved after, names another version: stale until the next tick runs the steps on
+      the active version. Safe: any setup from the layout. Unsafe: a setup from a newer
       mise copy while an upgrade runs.</li>
     <li><strong>the upgrade agent</strong> — <code class="code">dev.gigantic.&lt;tool&gt;.upgrade</code>,
       hotswap's alone: <code class="code">ensure</code> writes its plist, loads it when it is not
@@ -389,9 +389,9 @@
       <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code> and prune to current and
       previous. Red: record the version red, so a crash from here on reads red; repoint to the
       previous version, then setup, kickstart and smoke under the same manifest; exit 1 naming
-      the failing probe. A previous version no longer in the layout, or whose record is red, is
-      never rolled back onto unless it held (passed its own steps as a rollback target); the
-      failed version then stays current, red.</li>
+      the failing probe. A previous version no longer in the layout is never recorded, and one
+      whose record is red is never rolled back onto unless it held (passed its own steps as a
+      rollback target); the failed version then stays current, red.</li>
   </ol>
   <ul class="stack claims" role="list">
     <li><strong>the red hold</strong> — the record's <code class="code">red</code> names the
@@ -411,7 +411,14 @@
       <code class="code">previous</code> off the failed version, names it in
       <code class="code">red</code>, and sets <code class="code">held</code> when the
       rolled-back-onto version passed its steps. A lock beside it keeps two upgrades of one tool
-      apart.</li>
+      apart. The disk is the truth and the record its cache: <code class="code">ensure</code>
+      records a version it makes current (a first install, a migration) unless the record names
+      it already, green with no smoke, the red hold kept, its previous the version active before,
+      else the record's, when on disk. So a host holding an older record (sandman's, from its mise
+      days) never swaps onto the version it runs. A record still naming another version is stale,
+      left by a run that died past its repoint: <code class="code">upgrade</code> runs the steps
+      on the active version, its previous the record's version when on disk, and
+      <code class="code">--back</code> returns to that version.</li>
     <li><strong>exit codes</strong> — 0 green or settled, 1 red or refused by a drain or the
       hold, 2 unable to try (no version in the layout and none <code class="code">ensure</code>
       can bring, the lock held, a failed latest check, bootstrap or install) or unable to save
@@ -532,11 +539,6 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
     <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
   </header>
   <ol class="steps">
-    <li><strong>a fresh install's record</strong> — <code class="code">ensure</code> links a first
-      install without writing the record, so a host that held an older record (sandman's, from its
-      mise days) swaps onto the version it already runs at the next tick and names a previous
-      version that is not on disk; <code class="code">ensure</code> should write the record it
-      installs.</li>
     <li><strong>bifrost's self-update</strong> — still open (§ install); Components itself installs
       by <code class="code">hotswap::install</code> with no mise call.</li>
   </ol>
