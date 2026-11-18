@@ -532,13 +532,15 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
     <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
   </header>
   <ol class="steps">
-    <li><strong>sandman</strong> — rides its cutover: the rewrite's first release carries the
-      manifest, and its <code class="code">setup</code> opens with
-      <code class="code">hotswap::ensure</code>.</li>
+    <li><strong>a fresh install's record</strong> — <code class="code">ensure</code> links a first
+      install without writing the record, so a host that held an older record (sandman's, from its
+      mise days) swaps onto the version it already runs at the next tick and names a previous
+      version that is not on disk; <code class="code">ensure</code> should write the record it
+      installs.</li>
     <li><strong>bifrost's self-update</strong> — still open (§ install); Components itself installs
       by <code class="code">hotswap::install</code> with no mise call.</li>
   </ol>
-  <p class="docs-note">Landed: routines 2026.11.1 and grove 2026.11.5 carry this design. A host on
+  <p class="docs-note">Landed: routines 2026.11.1, grove 2026.11.5 and sandman 2026.11.2 carry this design. A host on
     an older release finds them through mise's version index, which can trail a release by hours,
     and migrates on that upgrade; from then on the latest check asks GitHub directly.</p>
   <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's self-update
