@@ -589,13 +589,20 @@ fn suite() {
         ts.join("current/t")
     );
     assert!(!staged.exists());
-    // a second install fetches nothing: setup alone, its failure exit 1; XDG_DATA_HOME moves
-    // nothing, the root is HOME's
+    // the installed version is the running one: no swap onto it
+    tag("2");
+    let settled = format!("0\nt 2: up to date\n{t_latest}");
+    assert_eq!(run(&["--check"]), settled);
+    assert_eq!(run(&[]), settled);
+    rm("tag");
+    // a second install fetches nothing: setup alone, its failure exit 1 and the record unverified,
+    // never green; XDG_DATA_HOME moves nothing, the root is HOME's
     code("t.setup.code");
     assert_eq!(
         go("install", &[], &[("XDG_DATA_HOME", "/x")]),
         format!("1\nsetup out\nsetup err\n{t_print}t@2 setup\n")
     );
+    assert_eq!(state(), r#""2" null false "t setup" null"#);
     rm("t.setup.code");
     assert_eq!(run(&["setup"]), format!("0\n~/.local/bin/t\n{t_print}"));
     // the agent is never loaded for a HOME that is not the account's (the passwd entry's): a
@@ -664,20 +671,23 @@ fn suite() {
     put_file("renamed", "x/t x/t-renamed");
     tag("2");
     assert_eq!(run(&["--back"]), "2\nt: no previous version\n");
-    // the installed version is the running one: no swap onto it
-    let settled = format!("0\nt 2: up to date\n{t_latest}");
-    assert_eq!(run(&["--check"]), settled);
-    assert_eq!(run(&[]), settled);
-    // with no record, the active version is swapped
-    fs::remove_file(state_dir.join("t.json")).unwrap();
+    // unverified by the failed install, or unrecorded: the steps run on the active version
     let plan = swap("2", "2")
         .trim_end()
         .replace('\n', "\n  ")
         .replace("t@2 ", "t ");
+    let check = |was: &str| format!("0\nt: {was} → 2\n  {plan}\n{t_latest}");
+    assert_eq!(run(&["--check"]), check("2"));
     assert_eq!(
-        run(&["--check"]),
-        format!("0\nt: none → 2\n  {plan}\n{t_latest}")
+        run(&[]),
+        format!(
+            "0\nt 2: green, 2 smoke probes\n{t_latest}{}",
+            swap("2", "2")
+        )
     );
+    assert_eq!(state(), r#""2" null true null null"#);
+    fs::remove_file(state_dir.join("t.json")).unwrap();
+    assert_eq!(run(&["--check"]), check("none"));
 
     // red with no previous version: stays put, held while it is latest
     code("chk.code");
@@ -862,7 +872,7 @@ fn suite() {
     // a record on a version gone from the layout is stale: --back has nowhere to go, and the swap
     // names no previous
     put("0");
-    assert_eq!(run(&["--back"]), "2\nt 0: not installed\n");
+    assert_eq!(run(&["--back"]), "2\nt: no previous version\n");
     assert_eq!(run(&[]), red("no previous version", &swap("2", "2")));
     assert_eq!(state(), r#""2" null false "chk x" "2""#);
     // a deliberate rollback that goes red stays there
