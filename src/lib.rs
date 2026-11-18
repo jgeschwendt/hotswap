@@ -423,6 +423,12 @@ fn from_mise() -> Option<(PathBuf, String, PathBuf)> {
 /// # Errors
 /// One line naming the failure.
 pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
+    layout(tool, m, true)
+}
+
+/// `ensure`, recording what it makes current only when `record`: `upgrade`'s repair records
+/// nothing, so until its steps settle the record stays as the tick found it.
+fn layout(tool: &str, m: &Manifest, record: bool) -> Result<PathBuf, String> {
     (|| -> Result<PathBuf, Box<dyn Error>> {
         let home = homed()?;
         let (dir, bin) = (root().join(tool), name(tool, m));
@@ -466,7 +472,7 @@ pub fn ensure(tool: &str, m: &Manifest) -> Result<PathBuf, String> {
             relink(Path::new(&v), &dir.join("current"))?;
             // the record caches `current`: one left naming another version would swap onto this
             // one at the next tick
-            if old.as_ref().is_none_or(|r| r.version != v) {
+            if record && old.as_ref().is_none_or(|r| r.version != v) {
                 let previous = (cur.or(old.map(|r| r.version))).filter(|p| dir.join(p).is_dir());
                 let r = Record {
                     at: now(),
@@ -763,15 +769,14 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
         let _lock = (mode != "--check")
             .then(|| lock(tool, &state))
             .transpose()?;
-        // read before a repair: its `ensure` records the version it brings, whose steps still run
-        let old = read(&path);
         // a host the old release bumped through mise but never set up (a refused drain, a kill)
         // runs this through mise's shim with no layout, and a `current` whose version went is
         // repaired; a binary run from anywhere else (a checkout) touches nothing
         let dangling = dir.join("current").symlink_metadata().is_ok();
         if current(&dir).is_none() && mode != "--check" && (dangling || from_mise().is_some()) {
-            ensure(tool, m)?;
+            layout(tool, m, false)?;
         }
+        let old = read(&path);
         let cur = current(&dir).ok_or(format!(
             "{tool}: no version under {}; run {bin} setup",
             dir.display()
