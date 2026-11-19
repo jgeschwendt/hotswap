@@ -347,14 +347,10 @@
         <tr><td>mise linked as a crate</td><td>its <code class="code">lib.rs</code>: the binary "is the only intended consumer; this is not a stable public API"; 128 direct dependencies</td></tr>
         <tr><td>Sigstore verification in hotswap</td><td><code class="code">sigstore-verify</code> 0.16 with ring: 84 crates, +0.85 MB per tool against sandman's 1.4 MB; the trust root is baked into each tool, so a rotation strands its upgrade path; signer memory and no-downgrade would be ours to write</td></tr>
         <tr><td>migration by a fresh fetch</td><td>it re-verifies, but runs inside the old release's swap: a rate limit there fails setup, rolls the host back onto mise and holds the new release red until the next one</td></tr>
+        <tr><td>bifrost's app layer on <code class="code">hotswap::upgrade</code></td><td>the shell already does the job for a different shape: two layers under Application Support, run as the shell's child, not one binary in <code class="code">~/.local/bin</code> restarted by launchd; this crate would gain a layers model and a second restart path for one consumer, and Sigstore's crates cost nothing beside Tauri's</td></tr>
       </tbody>
     </table>
   </div>
-  <h3 class="h3" id="install-open">Open questions</h3>
-  <ul class="stack claims" role="list">
-    <li><strong>bifrost's self-update</strong> — whether this mechanism replaces the 2026-10-30
-      plan of a private mise for the app layer (§ bifrost).</li>
-  </ul>
 </section>
 
 <!-- ※ mechanism -->
@@ -516,12 +512,13 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
       </tbody>
     </table>
   </div>
-  <p class="docs-note plan-note-after">bifrost's own self-update, planned: the app layer becomes a
-    packslip release swapped by <code class="code">hotswap::upgrade("bifrost", …)</code> from the
-    update loop (quiet drain, <code class="code">/health</code> smoke, no agent); the shell .app
-    stays on the Tauri updater, since nothing here swaps a running app bundle. The 2026-10-30 plan
-    fetched the app and runtime layers through a private mise; whether this mechanism replaces it
-    is open (§ install).</p>
+  <p class="docs-note plan-note-after">bifrost's own update stays the shell's (decided
+    2026-11-18): the shell links the packslip crate, verifies each release against
+    bifrost-releases' signer and installs its two layers, the app and the Erlang runtime it pins,
+    itself — staged, held until the app is quiet, swapped, gated on
+    <code class="code">/health</code>, rolled back, recovered after a crash. It calls no mise, and
+    the 2026-10-30 plan of a private mise was never built. The shell .app stays on the Tauri
+    updater. Why not this crate: § install, rejected.</p>
 </section>
 
 <!-- ※ non-goals -->
@@ -545,14 +542,14 @@ std::process::exit(hotswap::upgrade("sandman", &amp;m, &amp;args));</pre>
     <p class="docs-note">What the next shift does first; a landing that changes it edits it here.</p>
   </header>
   <ol class="steps">
-    <li><strong>bifrost's self-update</strong> — still open (§ install); Components itself installs
-      by <code class="code">hotswap::install</code> with no mise call.</li>
+    <li>Nothing open in this crate: grove, routines, sandman and bifrost's Components all run
+      on it.</li>
   </ol>
   <p class="docs-note">Landed: routines 2026.11.1, grove 2026.11.5 and sandman 2026.11.2 carry this design. A host on
     an older release finds them through mise's version index, which can trail a release by hours,
     and migrates on that upgrade; from then on the latest check asks GitHub directly.</p>
-  <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's self-update
-    (§ install); bifrost's first packslip release.</p>
+  <p class="docs-note plan-note-after"><strong>Owner-only:</strong> bifrost's first
+    packslip release that carries a shell bundle.</p>
 </section>
 
 </main>
