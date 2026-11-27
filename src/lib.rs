@@ -943,7 +943,13 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             r.failed = r.failed.take().or_else(|| {
                 steps.iter().enumerate().find_map(|(i, argv)| {
                     let (code, output) = run(argv);
-                    let probe = argv.join(" ");
+                    // a kick is named by its target, never by the script it runs
+                    let probe = match argv.as_slice() {
+                        [_, _, script, label, domain] if script == KICK => {
+                            format!("kick {domain}/{label}")
+                        }
+                        _ => argv.join(" "),
+                    };
                     if i + m.smoke.len() >= steps.len() {
                         r.smoke.push(Probe {
                             code,

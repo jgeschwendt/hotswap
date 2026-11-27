@@ -783,6 +783,19 @@ fn suite() {
         run(&["--back"]),
         format!("0\nt 3: green, 2 smoke probes\n{}", lwcr("3"))
     );
+    // a reload whose bootstrap fails every try fails the step, named by its target, not its script
+    put_file("launchctl.bootstrap.code", "5");
+    let boot = "launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.t.plist\n";
+    assert_eq!(
+        run(&["--back"]),
+        format!(
+            "1\nt: kick gui/$UID/dev.gigantic.t failed on 2; no second rollback\nt@2 setup\n{agent_print}launchctl print-disabled gui/$UID\nlaunchctl bootout gui/$UID/dev.gigantic.t\n{agent_print}{}",
+            boot.repeat(5)
+        )
+    );
+    rm("launchctl.bootstrap.code");
+    rm("booted");
+    repoint("3");
     // a disabled agent is never booted out: the kick is the kickstart it always was
     let r = json!({"at": 0, "ok": true, "previous": "2", "smoke": [], "version": "3"});
     fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
