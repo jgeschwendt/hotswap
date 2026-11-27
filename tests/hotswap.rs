@@ -273,7 +273,7 @@ fn suite() {
     let (bin, old, root) = (p.join("bin"), p.join("old"), p.join(".local/share/hotswap"));
     let ts = root.join("t");
     let stub = format!(
-        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -ww -o command= -p $PPID)\" in *bootout*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\nif [ \"$n\" = curl ] && [ ! -e '{p}/curl.code' ]; then case \"$*\" in *releases/latest) for u; do :; done; r=${{u#https://github.com/}}; r=${{r%/releases/latest}}; [ \"$(cut -d' ' -f1 '{p}/renamed' 2>/dev/null)\" = \"$r\" ] && {{ r=$(cut -d' ' -f2 '{p}/renamed'); case \"$*\" in *-fsSIL*) ;; *) printf 'https://github.com/%s/releases/latest' \"$r\"; exit 0;; esac; }}; t=$(cat '{p}/tag' 2>/dev/null); if [ -n \"$t\" ]; then printf 'https://github.com/%s/releases/tag/v%s' \"$r\" \"$t\"; else printf 'https://github.com/%s/releases' \"$r\"; fi; exit 0;; esac; fi\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && [ ! -e '{p}/launchctl.bootstrap.code' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || cat \"{p}/$n.$1@$(readlink '{m}').code\" 2>/dev/null || echo 0)\n",
+        "#!/bin/sh\nn=${{0##*/}}; v=$(readlink '{t}/current'); log=log\ncase \"$(ps -ww -o command= -p $PPID)\" in *'state = running'*) log=waiter.log;; esac\necho \"$n $*\" >> '{p}'/$log\nif [ \"$n\" = curl ] && [ ! -e '{p}/curl.code' ]; then case \"$*\" in *releases/latest) for u; do :; done; r=${{u#https://github.com/}}; r=${{r%/releases/latest}}; [ \"$(cut -d' ' -f1 '{p}/renamed' 2>/dev/null)\" = \"$r\" ] && {{ r=$(cut -d' ' -f2 '{p}/renamed'); case \"$*\" in *-fsSIL*) ;; *) printf 'https://github.com/%s/releases/latest' \"$r\"; exit 0;; esac; }}; t=$(cat '{p}/tag' 2>/dev/null); if [ -n \"$t\" ]; then printf 'https://github.com/%s/releases/tag/v%s' \"$r\" \"$t\"; else printf 'https://github.com/%s/releases' \"$r\"; fi; exit 0;; esac; fi\n[ \"$n $2\" = 'curl -fsSL' ] && {{ cat '{p}/garbage' 2>/dev/null || cat '{p}/packslip.stub'; }} > \"$4\"\n[ \"$n $1\" = 'launchctl bootout' ] && touch '{p}/booted'\n[ \"$n $1\" = 'launchctl print' ] && [ -e '{p}/booted' ] && exit 113\n[ \"$n $1\" = 'launchctl bootstrap' ] && rm '{p}/once' 2>/dev/null && echo 'Bootstrap failed: 5: Input/output error' >&2 && exit 5\n[ \"$n $1\" = 'launchctl bootstrap' ] && [ ! -e '{p}/launchctl.bootstrap.code' ] && rm -f '{p}/booted'\ncat '{p}'/\"$n.$1.out\" 2>/dev/null || cat '{p}'/\"$n.out\" 2>/dev/null || echo \"$1 out\"; [ -e '{p}/quiet' ] || echo \"$1 err\" >&2\nexit $(cat \"{p}/$n.code\" 2>/dev/null || cat \"{p}/$n.$1.code\" 2>/dev/null || cat \"{p}/$n@$v.code\" 2>/dev/null || cat \"{p}/$n.$1@$(readlink '{m}').code\" 2>/dev/null || echo 0)\n",
         t = ts.display(),
         m = root.join("m/current").display(),
         p = p.display()
@@ -416,10 +416,21 @@ fn suite() {
     let t_pk = pk("t", "x/t", "ps1_t");
     let print = |t: &str| format!("launchctl print gui/$UID/dev.gigantic.{t}.upgrade\n");
     let t_print = print("t");
+    let agent_print = "launchctl print gui/$UID/dev.gigantic.t\n";
     let steps = |v: &str| {
         format!(
-            "t@{v} setup\nlaunchctl kickstart -k gui/$UID/dev.gigantic.t\nt@{v} version\nchk x\n"
+            "t@{v} setup\n{agent_print}launchctl kickstart -k gui/$UID/dev.gigantic.t\nt@{v} version\nchk x\n"
         )
+    };
+    // --check names the kick step's argv, the script whole: it reads the agent only when it runs
+    let kick = format!("/bin/sh -c {} dev.gigantic.t gui/$UID", hotswap::KICK);
+    // the plan as --check prints it: the log's steps indented, the kick's two calls its one argv
+    let plan_of = |log: String| {
+        (log.trim_end().replace('\n', "\n  "))
+            .replace(
+                "launchctl print gui/$UID/dev.gigantic.t\n  launchctl kickstart -k gui/$UID/dev.gigantic.t",
+                &kick,
+            )
     };
     // the drain runs on the active version, before `current` moves to the new one
     let swap = |from: &str, to: &str| format!("t@{from} drain\n{}", steps(to));
@@ -672,10 +683,7 @@ fn suite() {
     tag("2");
     assert_eq!(run(&["--back"]), "2\nt: no previous version\n");
     // unverified by the failed install, or unrecorded: the steps run on the active version
-    let plan = swap("2", "2")
-        .trim_end()
-        .replace('\n', "\n  ")
-        .replace("t@2 ", "t ");
+    let plan = plan_of(swap("2", "2")).replace("t@2 ", "t ");
     let check = |was: &str| format!("0\nt: {was} → 2\n  {plan}\n{t_latest}");
     assert_eq!(run(&["--check"]), check("2"));
     assert_eq!(
@@ -735,14 +743,14 @@ fn suite() {
     assert_eq!(run(&["--check"]), format!("0\nt 3: up to date\n{t_latest}"));
     // a newer release in --check is reported, not fetched
     tag("4");
-    let plan = swap("3", "3")
-        .trim_end()
-        .replace('\n', "\n  ")
-        .replace("t@3 ", "t ");
+    let plan = plan_of(swap("3", "3")).replace("t@3 ", "t ");
+    // --check runs no step, so reads no agent, even a constrained one
+    put_file("launchctl.print.out", "path = ~/x.plist\nmanaged LWCR\n");
     assert_eq!(
         run(&["--check"]),
         format!("0\nt: 3 → 4\n  {plan}\n{t_latest}")
     );
+    rm("launchctl.print.out");
     // packslip skips a withdrawn 4 and chooses 3: nothing newer, nothing kept, and within the
     // hour the agent's tick spends no install on it, as --check says; a run by hand does
     assert_eq!(run(&[]), format!("0\nt 3: up to date\n{t_latest}{t_fetch}"));
@@ -756,6 +764,40 @@ fn suite() {
         format!("0\nt 2: green, 2 smoke probes\n{}", steps("2"))
     );
     assert_eq!(state(), r#""2" "3" true null "3""#);
+
+    // an agent loaded at login carries a managed launch constraint, which a kickstart keeps: the
+    // kick reads the agent when it runs and, loaded from a plist path under the constraint, boots
+    // it out and bootstraps it from that path (the up-front print and print-disabled are the
+    // decision)
+    let constrained_agent = format!(
+        "path = {}/Library/LaunchAgents/dev.gigantic.t.plist\nproperties = managed LWCR | has LWCR\n",
+        p.display()
+    );
+    put_file("launchctl.print.out", &constrained_agent);
+    let lwcr = |v: &str| {
+        format!(
+            "t@{v} setup\n{agent_print}launchctl print-disabled gui/$UID\nlaunchctl bootout gui/$UID/dev.gigantic.t\n{agent_print}launchctl bootstrap gui/$UID ~/Library/LaunchAgents/dev.gigantic.t.plist\nt@{v} version\nchk x\n"
+        )
+    };
+    assert_eq!(
+        run(&["--back"]),
+        format!("0\nt 3: green, 2 smoke probes\n{}", lwcr("3"))
+    );
+    // a disabled agent is never booted out: the kick is the kickstart it always was
+    let r = json!({"at": 0, "ok": true, "previous": "2", "smoke": [], "version": "3"});
+    fs::write(state_dir.join("t.json"), r.to_string()).unwrap();
+    put_file(
+        "launchctl.print-disabled.out",
+        "\"dev.gigantic.t\" => disabled\n",
+    );
+    assert_eq!(
+        run(&["--back"]),
+        format!(
+            "0\nt 2: green, 2 smoke probes\nt@2 setup\n{agent_print}launchctl print-disabled gui/$UID\nlaunchctl kickstart -k gui/$UID/dev.gigantic.t\nt@2 version\nchk x\n"
+        )
+    );
+    rm("launchctl.print-disabled.out");
+    rm("launchctl.print.out");
 
     // a red swap whose record cannot be saved still rolls back, then names the failed saves
     tag("2");
@@ -780,6 +822,19 @@ fn suite() {
         run(&[]),
         red("rolled back to 1", &format!("{}{rollback}", swap("2", "2")))
     );
+    // the same under a managed launch constraint: the rollback's kick decides afresh and reloads
+    // the agent again
+    put_file("launchctl.print.out", &constrained_agent);
+    repoint("2");
+    put("1");
+    assert_eq!(
+        run(&[]),
+        red(
+            "rolled back to 1",
+            &format!("t@2 drain\n{}{}", lwcr("2"), lwcr("1"))
+        )
+    );
+    rm("launchctl.print.out");
     assert_eq!(state(), r#""1" "0" false "chk x" "2""#);
     let back = r#""t version" 0, "chk x" 3, "t version" 0"#;
     assert_eq!(probes(), format!(r#"{back}, "chk x" 0"#));
@@ -1232,6 +1287,38 @@ fn migration(p: &Path, exe: &dyn Fn(&Path, &str), launch: &Launch, norm: &dyn Fn
     loaded(&link, "not running");
     assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
     assert!(!reload_pid.exists());
+    // loaded from the current plist under a managed launch constraint: the waiter reloads it,
+    // after its running job ends, since only a bootout and bootstrap drops the constraint
+    let constrained = |state: &str| {
+        let out = fs::read_to_string(p.join("launchctl.print.out")).unwrap();
+        put_file(
+            "launchctl.print.out",
+            &format!("{out}state = {state}\nproperties = managed LWCR\n"),
+        );
+    };
+    loaded(&link, "not running");
+    constrained("running");
+    assert_eq!(from_layout(&["setup"]), format!("0\n{mm}"));
+    for _ in 0..200 {
+        let seen = fs::read_to_string(p.join("waiter.log")).unwrap_or_default();
+        if seen.lines().count() >= 2 {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    // still running: the waiter has only looked
+    assert!(
+        !fs::read_to_string(p.join("waiter.log"))
+            .unwrap()
+            .contains("bootout")
+    );
+    assert!(reload_pid.exists());
+    loaded(&link, "not running");
+    constrained("not running");
+    let (log, outcome) = waited(4);
+    assert_eq!(log, reload);
+    assert_eq!(outcome, format!("{reloaded}{failed}{refused}{reloaded}"));
+    loaded(&link, "not running");
     fs::write(&agent_log, "").unwrap();
     // the next tick, the agent on the link: no mise, nothing reloads, no swap onto the running 2
     loaded(&link, "not running");

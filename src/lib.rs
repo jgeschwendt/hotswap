@@ -44,17 +44,45 @@ const PACKSLIP: (&str, [[&str; 4]; 3]) = (
     ],
 );
 
-/// Waits out the upgrade agent's running job, boots it out, waits (30 s at most) for launchd to let
-/// go — a bootstrap in that window fails — then bootstraps it from its plist, five tries 2 s apart,
-/// printing one line on the outcome and removing its pid file (an agent left unloaded, the next
-/// `ensure` loads): `$0` the service, `$1` the domain, `$2` the plist, `$3` the pid file.
-const RELOAD: &str = r#"while launchctl print "$0" 2>/dev/null | grep -q "state = running"; do sleep 1; done
-launchctl bootout "$0" >/dev/null 2>&1
-i=0; while launchctl print "$0" >/dev/null 2>&1 && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done
-i=0; until e=$(launchctl bootstrap "$1" "$2" 2>&1); do
-  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $0 not reloaded from $2 after $i tries: $(echo "$e" | head -1)"; rm -f "$3"; exit 1; }; sleep 2
+/// The reload body as a shell function, `reload <service> <domain> <plist>`: boots the service
+/// out, waits (30 s at most) for launchd to let go — a bootstrap in that window fails — then
+/// bootstraps it from its plist, five tries 2 s apart, printing one line on the outcome and
+/// returning 1 when every try failed. Bootout then bootstrap is the one move that drops the
+/// managed launch constraint a login-loaded agent carries; a kickstart keeps it.
+macro_rules! reload {
+    () => {
+        r#"reload() {
+launchctl bootout "$1" >/dev/null 2>&1
+i=0; while launchctl print "$1" >/dev/null 2>&1 && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done
+i=0; until e=$(launchctl bootstrap "$2" "$3" 2>&1); do
+  i=$((i+1)); [ $i -ge 5 ] && { echo "hotswap: $1 not reloaded from $3 after $i tries: $(echo "$e" | head -1)"; return 1; }; sleep 2
 done
-echo "hotswap: $0 reloaded from $2"; rm -f "$3""#;
+echo "hotswap: $1 reloaded from $3"
+}"#
+    };
+}
+
+/// The waiter's script: waits out the upgrade agent's running job, reloads it, and removes its pid
+/// file (an agent left unloaded, the next `ensure` loads): `$0` the service, `$1` the domain, `$2`
+/// the plist, `$3` the pid file.
+const WAITER: &str = concat!(
+    reload!(),
+    r#"
+while launchctl print "$0" 2>/dev/null | grep -q "state = running"; do sleep 1; done
+reload "$0" "$1" "$2"; r=$?; rm -f "$3"; exit $r"#
+);
+
+/// The swap's step for a manifest agent, decided when it runs: `$0` the label, `$1` the domain. An
+/// agent loaded from a plist path with a managed launch constraint, and not disabled, is reloaded
+/// from that path; anything else is kickstarted.
+#[doc(hidden)]
+pub const KICK: &str = concat!(
+    reload!(),
+    r#"
+s=$(launchctl print "$1/$0" 2>/dev/null)
+p=$(echo "$s" | sed -n 's/^[[:space:]]*path = //p' | head -1)
+if [ -n "$p" ] && echo "$s" | grep -q "managed LWCR" && ! launchctl print-disabled "$1" 2>/dev/null | grep -q "\"$0\" => disabled"; then reload "$1/$0" "$1" "$p"; else launchctl kickstart -k "$1/$0"; fi"#
+);
 
 /// What a tool runs around its swap, and where its releases come from; every field may be empty.
 #[derive(Default, Deserialize)]
@@ -548,17 +576,20 @@ fn tend(tool: &str, bin: &str, home: &Path, link: &Path) -> Result<(), Box<dyn E
             );
         }
     } else if said.contains(&format!("path = {plist_s}"))
-        && (fresh || !said.contains(&format!("program = {}", link.display())))
+        && (fresh
+            || !said.contains(&format!("program = {}", link.display()))
+            || said.contains("managed LWCR"))
         && !theirs()
     {
-        // loaded from this plist; launchd re-reads it only on a bootstrap
+        // loaded from this plist; launchd re-reads it only on a bootstrap, and drops a login-loaded
+        // agent's managed launch constraint only on one
         fs::create_dir_all(home.join("Library/Logs"))?;
         fs::create_dir_all(home.join(".local/state/hotswap"))?;
         let log = home.join(format!("Library/Logs/{label}.log"));
         let log = File::options().create(true).append(true).open(log)?;
         // its own group, writing only to the agent's log: it outlives the upgrade run it waits
         // out and holds no step's pipe open
-        let waiter = (Command::new("/bin/sh").args(["-c", RELOAD, &target, &gui, &plist_s]))
+        let waiter = (Command::new("/bin/sh").args(["-c", WAITER, &target, &gui, &plist_s]))
             .arg(&pid)
             .process_group(0)
             .stdin(Stdio::null())
@@ -857,10 +888,12 @@ pub fn upgrade(tool: &str, m: &Manifest, args: &[String]) -> i32 {
             println!("{tool} {}: {state}{pending}", r.version);
             return Ok(i32::from(!r.ok && mode != "--check"));
         }
-        // Setup, then the kickstarts (a new agent is loaded only once setup ran), then the smoke
-        // probes; never the tool's own upgrade agent, whose kick would kill this very swap.
+        // Setup, then the kicks (a new agent is loaded only once setup ran), then the smoke probes;
+        // never the tool's own upgrade agent, whose kick would kill this very swap. A kick reads
+        // the agent when it runs: reloaded when it carries a managed launch constraint, else
+        // kickstarted.
         let kick = m.agents.iter().filter(|a| **a != me).map(|a| {
-            ["launchctl", "kickstart", "-k", &format!("gui/{uid}/{a}")]
+            ["/bin/sh", "-c", KICK, a, &format!("gui/{uid}")]
                 .map(String::from)
                 .into()
         });
