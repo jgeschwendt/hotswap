@@ -259,9 +259,11 @@
       <code class="code">~/.local/bin/&lt;bin&gt;</code>, and when the loaded upgrade agent runs
       another program, rewrites its plist and starts one detached waiter (its pid in
       <code class="code">&lt;tool&gt;.reload</code> beside the record; a pid whose command line
-      does not name the plist, reused after a logout killed the waiter, is not one). The waiter waits out the
-      agent's running job, boots it out, waits up to 30 s for launchd to let go, then bootstraps
-      it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
+      does not name the plist, reused after a logout killed the waiter, is not one). The same
+      waiter starts when the agent is loaded from this plist and carries a managed launch
+      constraint (below, under Swap). The waiter waits out the
+      agent's running job, then reloads it: boots it out, waits up to 30 s for launchd to let go,
+      then bootstraps it, five tries 2 s apart, appending one line to the agent's log: reloaded, or not and why
       (run 2026-11-17 against a throwaway label: three failed bootstraps, the fourth loaded). After
       five failed bootstraps the agent stays unloaded until a later
       <code class="code">setup</code> or the next login loads it from whatever plist is on disk
@@ -378,10 +380,23 @@
       from an older tree keeps its loaded binary but loses anything it opens or execs from that
       tree by path.</li>
     <li><strong>Swap</strong> — <code class="code">current</code> repointed, then
-      <code class="code">&lt;tool&gt; setup</code>, then <code class="code">launchctl kickstart
-      -k</code> each manifest agent except the tool's upgrade agent, whose kick would kill the
-      running swap; setup first, since it bootstraps an agent a release adds and kickstarting an
-      unloaded label fails.</li>
+      <code class="code">&lt;tool&gt; setup</code>, then a kick of each manifest agent except the
+      tool's upgrade agent, whose kick would kill the running swap; setup first, since it
+      bootstraps an agent a release adds and kicking an unloaded label fails. The kick is one
+      shell step that reads the agent when it runs (so <code class="code">--check</code> runs no
+      <code class="code">launchctl</code> and a rollback decides again). An agent loaded at login
+      carries a managed launch constraint (<code class="code">launchctl print</code> shows
+      <code class="code">managed LWCR</code>); one loaded by <code class="code">bootstrap</code>
+      never does. A swap changes the binary the constraint was made for, so the first spawn after
+      it is killed for a code-signing launch-constraint violation, launchd repairs the constraint
+      once through the background-task manager, and a later re-key of that item leaves the job in
+      <code class="code">spawn failed</code>, exit 78, for good. A kickstart keeps the constraint;
+      a bootout, a wait until <code class="code">print</code> fails, then a bootstrap removes it
+      until the next login. So an agent loaded from a plist path (the print's own
+      <code class="code">path =</code> line) with the constraint, and not disabled, is reloaded
+      from that path by the waiter's reload (five bootstrap tries, none succeeding fails the step
+      and rolls back); anything else, a disabled one included, is kickstarted with
+      <code class="code">-k</code>.</li>
     <li><strong>Smoke</strong> — the manifest's smoke commands, against the new processes.</li>
     <li><strong>Settle or roll back</strong> — green: record the swap in
       <code class="code">~/.local/state/hotswap/&lt;tool&gt;.json</code> and prune to current and
